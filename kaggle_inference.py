@@ -326,7 +326,7 @@ def build_prompt(payload: dict) -> list:
         "  Left Arm: X (>0 lowers to hip, <0 raises to sky). Z (>0 swings FORWARD in front of chest, <0 swings BACKWARD behind back).\n"
         "ELBOWS: X axis only. <0 bends the elbow inward normally (e.g. -90). >0 breaks it backwards (clamped to 0).\n"
         "HIPS: X axis (>0 kicks leg forward in front of body, <0 kicks backward). Z axis (Right <0 spreads outward, Left >0 spreads outward).\n"
-        "KNEES: X axis only. <0 bends the knee naturally backwards (e.g. -45 for a step).\n"
+        "KNEES: X axis only. Positive values bend the knee naturally backwards (e.g. +45 for a step); 0 is straight.\n"
     )
 
     time_block = f"Current heartbeat: {payload.get('heartbeat')}. Light state: {payload.get('light_state')}."
@@ -399,9 +399,7 @@ Then the JSON block.
 No text after the JSON.
 
 == STEP-BY-STEP CLOSED-LOOP MOTOR CONTROL (RECOMMENDED) ==
-Execute one deliberate, calculated posture or step adjustment per cycle in "joint_overrides".
-Observe physical and vestibular feedback on the next heartbeat before advancing.
-Do not chain speculative motion frames blindly without intermediate balance feedback.
+Use one deliberate joint_overrides adjustment per cycle for posture or manipulation. For coordinated locomotion, use a short timed sequence with 3-8 frames and explicit monotonic timeOffsetMs values beginning at 0. Never use a sequence without timing, never put conflicting targets for one joint at the same time, and wait for the next physical observation before extending the gait.
 
 == JOINT ANGLES — CRITICAL RULES ==
 Joint values must be plain numbers in DEGREES (e.g. 15, -30, 90) representing angular rotation.
@@ -410,7 +408,7 @@ Hard anatomical limits enforced by the physics engine (values outside will be cl
   - Spine segments (spine, lumbar, thoracic): -15 to +15 degrees
   - Neck / cervical: -60 to +60 degrees
   - Head: -45 to +45 degrees
-  - Knee (leg): -150 to 0 degrees (flexion only)
+    - Knee (leg): 0 to +150 degrees (flexion only; 0 is straight)
   - Elbow / forearm: -145 to 0 degrees
   - Hip (upleg): -120 to +120 degrees
   - Shoulder: -180 to +180 degrees
@@ -426,6 +424,7 @@ CRITICAL JSON RULES — violations will crash the system:
 3. NEVER use placeholder keys like "joint_name". Each key in joint_overrides MUST be an actual joint name from the valid joints list.
 4. gaze_target, new_motor_program, and flag MUST be at the ROOT level of the JSON, NOT inside "actions".
 5. Output EXACTLY one closing brace at the end. No extra braces, no trailing text.
+6. For locomotion, timeOffsetMs must be integer milliseconds, strictly increasing, and no later than 2000 ms. Use activeGaitPhase=true for a coordinated gait sequence.
 
 JSON SCHEMA:
 {{
@@ -440,7 +439,9 @@ JSON SCHEMA:
     "program_sequence": ["program_name", ...],
     "joint_overrides": {{ "actual_joint_name": degrees_value }}
   }},
-  "gaze_target": null | {{ "yaw": degrees, "pitch": degrees }},
+    "sequence": [{{ "timeOffsetMs": 0, "overrides": {{ "actual_joint_name": degrees_value }}, "durationMs": 120, "interpolation": "smooth" }}],
+    "activeGaitPhase": false,
+    "gaze_target": null | {{ "yaw": degrees, "pitch": degrees }},
   "new_motor_program": null | {{
     "name": "program_name_string",
     "program": [

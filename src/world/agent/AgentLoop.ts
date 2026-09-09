@@ -569,6 +569,24 @@ export class AgentLoop {
       };
 
       if (data.sequence && Array.isArray(data.sequence)) {
+        const rawSequence = data.sequence;
+        const isTimedSequence = rawSequence.length > 0 && rawSequence.every((frame: any) => (
+          frame && Number.isFinite(frame.timeOffsetMs) &&
+          frame.overrides && typeof frame.overrides === 'object'
+        ));
+        const hasStrictTiming = isTimedSequence &&
+          rawSequence[0].timeOffsetMs === 0 &&
+          rawSequence.every((frame: any, index: number) => (
+            index === 0 || frame.timeOffsetMs > rawSequence[index - 1].timeOffsetMs
+          )) &&
+          rawSequence[rawSequence.length - 1].timeOffsetMs <= 2000;
+
+        if (!hasStrictTiming || rawSequence.length > 8) {
+          console.warn(`[AgentLoop (${this.config.agentId})] Rejecting unsafe timeline: expected 1-8 strictly timed frames within 2000ms.`);
+          data.sequence = [];
+          data.activeGaitPhase = false;
+        }
+
         for (const frame of data.sequence) {
           if (!frame.overrides || typeof frame.overrides !== 'object') continue;
           for (const joint in frame.overrides) {

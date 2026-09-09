@@ -120,21 +120,21 @@ You inhabit a ${bodyType} body. Joints are actively actuated via position-servo 
     const p04 = `== MOTOR CONTROL ==
 HEAD/SPINE: X=Pitch (>0 forward, <0 back). Y=Yaw (>0 left). Z=Roll (>0 right).
 ARMS: X (>0 down, <0 up). Z (<0 forward, >0 back). ELBOWS: >0 bends in, <0 breaks back (clamped 0).
-HIPS: X (>0 kick forward, <0 back). Z (Right <0 spread, Left >0 spread). KNEES: <0 bends back.
+HIPS: X (>0 kick forward, <0 back). Z (Right <0 spread, Left >0 spread). KNEES: positive X flexes backward; 0 is straight.
 FINGERS: 1-DOF X axis. Segments 2-3 need segment 1 flexed first.
 WRISTS: X=flex, Z=deviation.
 BONE MAP: head→mixamorighead, spine→mixamorigspine, R shoulder→mixamorigrightarm, L shoulder→mixamorigleftarm,
 R elbow→mixamorigrightforearm, L elbow→mixamorigleftforearm, R hip→mixamorigrightupleg, L hip→mixamorigleftupleg,
 R knee→mixamorigrightleg, L knee→mixamorigleftleg.
 VALUES: Degrees. Scalar or [pitch,yaw,roll] array.
-RANGES: spine ±45, head ±60, shoulder ±180, elbow 0–145, hip ±120, knee 0–(-150).
+RANGES: spine ±45, head ±60, shoulder ±180, elbow 0–145, hip ±120, knee 0–150.
 PROGRAMS: "reset_pose"/"stand"/"recover" → upright in-place. "jump" → upward impulse (must be grounded).
-For complex motion, output discrete joint_overrides — well-calculated single adjustments per cycle. Do NOT use multi-frame "sequence" arrays; they compound errors and cause unpredictable twisting/spinning. One deliberate joint adjustment per cycle, then observe the result.`;
+For posture and manipulation, output one deliberate joint_overrides adjustment per cycle. For coordinated locomotion, output a short timed sequence with explicit timeOffsetMs values. Never use a sequence without timing, and never issue conflicting values for the same joint at the same time.`;
 
     const p06 = `== OUTPUT ==
 Stream thought, then write ---ACTION--- then JSON:
 {"memory_write":{"memory_id":"auto","tier":1|2|3,"summary":"one sentence"},"actions":{"program_sequence":["name"],"joint_overrides":{"joint":degrees}},"gaze_target":null|{"yaw":deg,"pitch":deg},"new_motor_program":null|{"name":"str","program":[{"joint":val}]},"flag":null|"requesting_object_hint"}
-ALL joint values in DEGREES. No text after JSON.`;
+ALL joint values in DEGREES. Positive knee X values flex the knee; 0 is straight. For locomotion, timeOffsetMs must be integer milliseconds, start at 0, increase strictly, and span no more than 2000 ms. Use activeGaitPhase=true for a coordinated gait sequence. No text after JSON.`;
 
     const staticContent = [p01, p02, p03, p04, p06].join('\n\n');
 
@@ -221,7 +221,7 @@ LIMB LIMITATIONS:
 LOCOMOTION:
 - You move through the world when your feet make contact with the ground and produce forces.
 - More foot/toe contact while moving = more body translation.
-- To walk forward: alternate lifting each leg (hip X negative = foot lifts forward, knee bends negative) then pushing backward (hip X positive = leg extends back, knee straightens). Swing arms for balance.
+- To walk forward: alternate lifting each leg (hip X negative = foot lifts forward, knee bends positive) then pushing backward (hip X positive = leg extends back, knee returns toward zero). Swing arms for balance.
 - To turn: use asymmetric leg strokes — push one leg harder than the other to create body rotation.
 - To look around: rotate your head (mixamorighead) using [pitch, yaw, roll] in degrees.
 - To reach for an object: move your arm with mixamorigrightarm or mixamorigleftarm.
@@ -251,13 +251,13 @@ READING YOUR VESTIBULAR STATE:
 
 == STEP-BY-STEP CLOSED-LOOP MOTOR CONTROL (CRITICAL) ==
 - CLOSED-LOOP EXECUTION IS ALWAYS RECOMMENDED:
-  · Output discrete, deliberate joint adjustments ('actions.joint_overrides' and 'actions.program_sequence').
-  · Execute ONE clear posture change or step per cognitive cycle, then observe the physical result (vision, vestibular tilt, contact forces) on the next heartbeat before deciding your next move.
-  · This eliminates the need to guess millisecond timeline durations while processing heavy vision and proprioception data.
+  · Output discrete, deliberate joint adjustments ('actions.joint_overrides' and 'actions.program_sequence') for posture and manipulation.
+  · For coordinated locomotion, output a short timed sequence with 3-8 frames, timeOffsetMs beginning at 0 and increasing strictly, then observe the physical result before extending it.
+  · Never emit an unbounded timeline or conflicting simultaneous targets; timing is part of a locomotion action.
 
 - WHY UNCALCULATED FRAME CHAINING LEADS TO FALLS:
-  · If you stream multiple consecutive motion frames blindly in an open-loop timeline without intermediate sensory feedback, a single miscalculated angle in any frame will throw your center of mass outside your base of support.
-  · By moving step-by-step, you observe every tilt angle immediately and maintain complete, stable control over your balance at all times.
+  · A long speculative timeline can throw your center of mass outside your base of support. Keep locomotion sequences short and end in a stable pose.
+  · Wait for vestibular, contact, and visual feedback before sending the next gait segment.
 
 - SAFE DELTA GUIDELINES:
   · Keep joint changes smooth: <= 15° to 25° per cycle for core/hips/spine.
@@ -284,7 +284,7 @@ HEAD / SPINE: X=Pitch (>0 bends forward, chin to chest; <0 arches back). Y=Yaw (
 ARMS (both sides): X (>0 lowers to hip, <0 raises to sky). Z (<0 swings FORWARD in front of chest, >0 swings BACKWARD behind back).
 ELBOWS: X axis only. >0 bends inward normally (e.g. 90). <0 breaks backwards (clamped to 0).
 HIPS: X (>0 kicks leg forward in front of body, <0 kicks backward). Z (Right <0 spreads outward, Left >0 spreads outward).
-KNEES: X axis only. <0 bends the knee naturally (e.g. -45 for a step). Anatomical limit: 0 to -150° flexion.
+KNEES: X axis only. Positive values bend the knee naturally (e.g. 45 for a step); 0 is straight. Anatomical limit: 0 to 150° flexion.
 FINGERS: Each phalanx is 1-DOF (X axis only). X>0 flexes (curl), X=0 is extended.
   Segments 2-3 require segment 1 to be flexed first (tendon synergy).
   Naming: mixamorig{left|right}hand{thumb|index|middle|ring|pinky}{1|2|3}
@@ -304,15 +304,14 @@ left knee → mixamorigleftleg, right index → mixamorigrighthandindex1, left i
 right thumb → mixamorigrighthandthumb1, left thumb → mixamoriglefthandthumb1.
 
 ANATOMICAL DEGREE RANGES (enforced by physics):
-spine ±45, neck/head ±60, shoulder ±180, elbow 0 to 145, hip ±120, knee 0 to -150, fingers 0 to 100, wrist ±80.
+spine ±45, neck/head ±60, shoulder ±180, elbow 0 to 145, hip ±120, knee 0 to 150, fingers 0 to 100, wrist ±80.
 
 PROGRAM SEQUENCE COMMANDS:
 - "reset_pose" / "stand" / "recover" → safely resets body to an upright standing pose in-place.
 - "jump" → applies upward impulse (must be grounded).
 
-DISCRETE STEP ACTION FORMAT (RECOMMENDED):
-Use "joint_overrides" for immediate, deliberate, step-by-step joint angle targets.
-If using a multi-frame "sequence", ensure every single frame is mathematically calculated with gradual deltas and ends in a stable neutral pose.`;
+DISCRETE STEP ACTION FORMAT:
+Use "joint_overrides" for immediate posture/manipulation targets. For coordinated locomotion, use a short "sequence" with 3-8 timed frames, timeOffsetMs beginning at 0 and increasing strictly, gradual deltas, smooth interpolation, and a stable final frame. Do not use unbounded timelines or conflicting simultaneous targets.`;
 
     return {
       id: 'P04',

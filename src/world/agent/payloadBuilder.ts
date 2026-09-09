@@ -29,7 +29,6 @@ export class PayloadBuilder {
 
   private previousJoints: Record<string, any> = {};
   private static SPATIAL_ANCHORS = ['mixamorighead', 'mixamorigspine', 'mixamorighips', 'mixamorigleftupleg', 'mixamorigrightupleg'];
-  private static JOINT_DELTA_THRESHOLD = 2.0;
 
   /**
    * Compressed tactile context: only report contacts with impulse > 1.0 N·s.
@@ -165,28 +164,23 @@ export class PayloadBuilder {
 
     // Determine posture and balance situation
     let postureLabel: string;
-    let balanceState: string;
     let situationBlock: string;
 
     if (bodyHeight <= 0.35 || tiltDeg >= 60) {
       postureLabel = 'FALLEN / PRONE';
-      balanceState = `FALLEN (${tiltDeg}° off-vertical)`;
       situationBlock = `SITUATION: You have FALLEN to the floor (hip height: ${bodyHeight.toFixed(2)}m, tilt: ${tiltDeg}°).
 PRIORITY ACTION: Execute 'get_up_from_front', 'get_up_from_back', or program_sequence: ["reset_pose"] to return upright.`;
     } else if (tiltDeg >= 18 || bodyHeight < 0.7) {
       postureLabel = `CRITICAL LEAN — IMMINENT FALL (${leanDirection})`;
-      balanceState = `CRITICAL TILT (${tiltDeg}° ${leanDirection})`;
       situationBlock = `CRITICAL BALANCE WARNING: You are leaning ${leanDirection} by ${tiltDeg}° (pitch: ${pitchDeg}°, roll: ${rollDeg}°).
 Inability to rapidly correct this tilt will cause an IMMINENT FALL!
 MANEUVER TO CATCH BALANCE: ${maneuverTip}`;
     } else if (tiltDeg >= 7) {
       postureLabel = `SLIGHT LEAN (${leanDirection})`;
-      balanceState = `LEANING (${tiltDeg}° ${leanDirection})`;
       situationBlock = `BALANCE NOTICE: Currently tilted ${leanDirection} by ${tiltDeg}° (pitch: ${pitchDeg}°, roll: ${rollDeg}°).
 ADVICE: ${maneuverTip}`;
     } else {
       postureLabel = 'STANDING UPRIGHT & BALANCED';
-      balanceState = `BALANCED (${tiltDeg}° tilt)`;
       situationBlock = `SITUATION: Standing upright on the floor with stable balance (hip height: ${bodyHeight.toFixed(2)}m, tilt: ${tiltDeg}°). Both feet have ground support.`;
     }
 
