@@ -1,13 +1,13 @@
 import { useState, useMemo } from 'react';
 import { useAgentStore } from '../../store/agentStore';
 import { useUIStore } from '../../store/uiStore';
-import { CaretDown, CaretUp, Database, Bookmark, Export } from '../ui/icons';
+import { CaretDown, CaretUp, Database, Bookmark, Export, Trash } from '../ui/icons';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { STRINGS } from '../../constants/strings';
 
 export const MemoryViewer: React.FC = () => {
-  const { memories } = useAgentStore();
+  const { memories, clearMemories } = useAgentStore();
   const { setExportModalOpen, setSettingsModalOpen } = useUIStore();
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -48,12 +48,23 @@ export const MemoryViewer: React.FC = () => {
             <span className="text-xs text-text-tertiary font-mono">
               Showing last {Math.min(10, memories.length)} of {memories.length} memories
             </span>
-            <button
-              onClick={() => setSettingsModalOpen(true)}
-              className="text-xs text-text-secondary hover:text-text-primary hover:underline font-medium"
-            >
-              Full Explorer
-            </button>
+            <div className="flex items-center gap-2">
+              {memories.length > 0 && (
+                <button
+                  onClick={() => clearMemories()}
+                  className="text-xs text-text-tertiary hover:text-red-400 transition-colors flex items-center gap-1"
+                  title={STRINGS.AGENT.CLEAR_MEMORIES}
+                >
+                  <Trash size={12} />
+                </button>
+              )}
+              <button
+                onClick={() => setSettingsModalOpen(true)}
+                className="text-xs text-text-secondary hover:text-text-primary hover:underline font-medium"
+              >
+                Full Explorer
+              </button>
+            </div>
           </div>
           <div className="flex-1 space-y-3">
             {memories.slice(-10).reverse().map((memory) => (
@@ -66,7 +77,7 @@ export const MemoryViewer: React.FC = () => {
                     )}
                   </div>
                   <span className={`text-xs font-mono ${getRewardColor(memory.rewardSignal)}`}>
-                    {memory.rewardSignal > 0 ? '+' : ''}{memory.rewardSignal.toFixed(1)}
+                    {(memory.rewardSignal ?? 0) > 0 ? '+' : ''}{(memory.rewardSignal ?? 0).toFixed(1)}
                   </span>
                 </div>
                 <p className="text-xs text-text-secondary leading-normal italic">

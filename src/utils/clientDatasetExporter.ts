@@ -311,7 +311,13 @@ function formatParquet(memories: any[]): Uint8Array {
     thought: String(m.thought || ''),
     visual_description: String(m.visual_description || ''),
     audio_state: String(m.audio_state || ''),
+    observation_before: JSON.stringify(getTelemetry(m).observation_before || null),
+    observation_after: JSON.stringify(getTelemetry(m).observation_after || null),
+    joint_positions: JSON.stringify(getJointPositions(m)),
+    joint_velocities: JSON.stringify(getJointVelocities(m)),
+    root_position: JSON.stringify(getRootPosition(m)),
     action_taken: JSON.stringify(m.action_taken || null),
+    requested_joint_action: JSON.stringify(getRequestedJointAction(m)),
     outcome: String(m.outcome || ''),
     reward_signal: typeof m.reward_signal === 'number' ? m.reward_signal : 0,
     goal_at_time: String(m.goal_at_time || ''),
@@ -323,13 +329,15 @@ function formatParquet(memories: any[]): Uint8Array {
 
 // Helper: CSV Format
 function formatCSV(memories: any[]): string {
-  const header = 'agent_id,heartbeat,tier,thought,action_json,outcome,reward,session_id\n';
+  const header = 'agent_id,heartbeat,tier,thought,action_json,joint_positions,root_position,outcome,reward,session_id\n';
   const rows = memories.map((m) => {
     const actionJson = JSON.stringify(m.action_taken || {}).replace(/"/g, '""');
     const thought = (m.thought || '').replace(/"/g, '""');
+    const jointPositions = JSON.stringify(getJointPositions(m)).replace(/"/g, '""');
+    const rootPosition = JSON.stringify(getRootPosition(m)).replace(/"/g, '""');
     const outcome = m.outcome || '';
     const agentId = m.agent_id || 'agent_0';
-    return `${agentId},${m.heartbeat},${m.tier},"${thought}","${actionJson}",${outcome},${m.reward_signal ?? 0},${m.session_id ?? ''}`;
+    return `${agentId},${m.heartbeat},${m.tier},"${thought}","${actionJson}","${jointPositions}","${rootPosition}",${outcome},${m.reward_signal ?? 0},${m.session_id ?? ''}`;
   });
   return header + rows.join('\n');
 }
@@ -351,6 +359,11 @@ function formatJSONL(memories: any[]): string {
               memory_write: { tier: m.tier, summary: m.visual_description },
             })}`,
           },
+          { role: 'observation', content: {
+            joint_positions: getJointPositions(m),
+            joint_velocities: getJointVelocities(m),
+            root_position: getRootPosition(m),
+          } },
         ],
       });
     })
@@ -377,14 +390,54 @@ function formatLeRobot(memories: any[]): string {
           thought: m.thought || '',
           visual_description: m.visual_description || m.visualDescription || '',
           audio_state: m.audio_state || m.audioState || '',
+          before: getTelemetry(m).observation_before || null,
+          after: getTelemetry(m).observation_after || null,
         },
-        state: m.joint_states || m.jointStates || [],
-        action: m.action_taken || m.action || [],
+        state: getJointPositions(m),
+        action: getRequestedJointAction(m),
         reward: m.reward_signal ?? m.rewardSignal ?? 0,
         done: m.outcome === 'success' || m.outcome === 'failure',
       });
     })
     .join('\n');
+}
+
+function getTelemetry(memory: any): any {
+  if (memory?.self_questions && typeof memory.self_questions === 'object') {
+    return memory.self_questions;
+  }
+  if (typeof memory?.self_questions === 'string') {
+    try {
+      return JSON.parse(memory.self_questions);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function getJointPositions(memory: any): number[] {
+  const telemetry = getTelemetry(memory);
+  const pose = telemetry.observation_after?.proprioception?.current_pose;
+  if (Array.isArray(pose)) return pose.filter((value) => typeof value === 'number' && Number.isFinite(value));
+  if (Array.isArray(memory?.joint_states)) return memory.joint_states;
+  return [];
+}
+
+function getJointVelocities(memory: any): Record<string, number> | number[] {
+  const telemetry = getTelemetry(memory);
+  return telemetry.observation_after?.joint_velocities || memory?.joint_velocities || [];
+}
+
+function getRootPosition(memory: any): number[] {
+  const telemetry = getTelemetry(memory);
+  const position = telemetry.observation_after?.root_state?.position || memory?.root_position;
+  return Array.isArray(position) ? position : [];
+}
+
+function getRequestedJointAction(memory: any): any {
+  const telemetry = getTelemetry(memory);
+  return telemetry.requested_action?.joint_overrides || memory?.action_taken?.joint_overrides || memory?.action_taken || {};
 }
 
 // Helper: Thoughts Report format

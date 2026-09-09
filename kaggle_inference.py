@@ -2,7 +2,7 @@
 import os, sys
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 sys.setrecursionlimit(10000)
-import io, base64, time, json, threading, uvicorn, schedule, re, warnings, asyncio, shutil, traceback
+import io, base64, time, json, threading, queue, uvicorn, schedule, re, warnings, asyncio, shutil, traceback
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Union
 from fastapi import FastAPI, Request
@@ -15,6 +15,16 @@ from PIL import Image
 
 # Force Python garbage collection and clear PyTorch cache
 gc.collect()
+
+def safe_json_dumps(obj, max_chars=3000):
+    """Safely dump JSON and truncate if it's massively long to prevent VRAM explosion."""
+    try:
+        s = json.dumps(obj)
+        if len(s) > max_chars:
+            return s[:max_chars] + "...[TRUNCATED]"
+        return s
+    except Exception:
+        return "{}"
 
 # === APP SETUP & CORS ===
 app = FastAPI(title="SYNTHIA Inference Server")
@@ -60,6 +70,20 @@ MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() == "true"
 model = None
 processor = None
 generation_lock = threading.Lock()
+
+MIN_PIXELS = int(os.getenv("MIN_PIXELS", 256 * 28 * 28))
+MAX_PIXELS = int(os.getenv("MAX_PIXELS", 512 * 28 * 28))
+SAFE_IMAGE_SIZE = int(os.getenv("SAFE_IMAGE_SIZE", 384))
+
+def clear_gpu_memory():
+    """Aggressively collect Python garbage and clear PyTorch CUDA caches."""
+    gc.collect()
+    if not MOCK_MODE and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
 
 if not MOCK_MODE:
     import torch
@@ -134,20 +158,60 @@ if not MOCK_MODE:
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4"
         )
-        model = AutoModelForImageTextToText.from_pretrained(
-            MODEL_PATH,
-            quantization_config=bnb_config,
-            device_map="auto",
-            trust_remote_code=True,
-        )
-        processor = AutoProcessor.from_pretrained(MODEL_PATH)
-        print("✅ Qwen2.5-VL loaded successfully!")
+
+        # 1. Cap image resolution to prevent VRAM explosion (512*28*28 is ~400k pixels, ideal for 16GB VRAM)
+        try:
+            processor = AutoProcessor.from_pretrained(
+                MODEL_PATH,
+                min_pixels=MIN_PIXELS,
+                max_pixels=MAX_PIXELS,
+                trust_remote_code=True
+            )
+        except Exception as e_proc:
+            print(f"⚠️ Processor init with pixel bounds failed ({e_proc}), loading standard processor...")
+            processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
+
+        # Determine device map: balanced across multiple GPUs (e.g. T4 x2) or auto
+        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+
+        # For a 3B model, single-GPU is actually FASTER and uses LESS VRAM than 'balanced'
+        # because it avoids accelerate hooks that block PyTorch memory optimizations.
+        if "3b" in MODEL_PATH.lower():
+            preferred_device_map = "cuda:0"
+            print(f"  3B Model detected. Forcing single GPU ({preferred_device_map}) to bypass accelerate overhead.")
+        else:
+            preferred_device_map = os.getenv("DEVICE_MAP", "balanced" if num_gpus > 1 else "auto")
+            print(f"  Detected {num_gpus} GPU(s). Using device_map='{preferred_device_map}'")
+
+        # 2. Try Flash Attention 2 first, then SDPA (scaled dot product attention), then default
+        model = None
+        for attn_mode in ["flash_attention_2", "sdpa", None]:
+            try:
+                load_kwargs = {
+                    "quantization_config": bnb_config,
+                    "device_map": preferred_device_map,
+                    "torch_dtype": torch.float16,
+                    "trust_remote_code": True,
+                }
+                if attn_mode:
+                    load_kwargs["attn_implementation"] = attn_mode
+
+                print(f"Attempting model load with attn_implementation='{attn_mode}' and device_map='{preferred_device_map}'...")
+                model = AutoModelForImageTextToText.from_pretrained(MODEL_PATH, **load_kwargs)
+                print(f"✅ Qwen2.5-VL loaded successfully with attn_implementation='{attn_mode}'!")
+                break
+            except Exception as e_attn:
+                print(f"⚠️ Load with attn_implementation='{attn_mode}' failed: {e_attn}")
+
+        if model is None:
+            raise RuntimeError("Failed to load Qwen2.5-VL model with any attention implementation.")
+
     except Exception as e:
         print(f"⚠️ VLM load failed: {e}. Falling back to MOCK_MODE.")
         print("=" * 60)
         print("⚠️  MOCK MODE ACTIVE — AI will return canned responses.")
         print(f"    Error: {e}")
-        print("    Required packages: pip install bitsandbytes accelerate qwen-vl-utils")
+        print("    Required packages: pip install bitsandbytes accelerate qwen-vl-utils flash-attn")
         print("=" * 60)
         MOCK_MODE = True
 else:
@@ -252,7 +316,7 @@ def build_prompt(payload: dict) -> list:
         )
 
     upright_preset = payload.get('upright_preset', {})
-    upright_block = f"Your 'upright preset' (target default pose) is defined by these joint angles: {json.dumps(upright_preset)}"
+    upright_block = f"Your 'upright preset' (target default pose) is defined by these joint angles: {safe_json_dumps(upright_preset)}"
 
     axis_block = (
         "== JOINT AXIS MAP (CRITICAL FOR MOVEMENT) ==\n"
@@ -267,7 +331,7 @@ def build_prompt(payload: dict) -> list:
 
     time_block = f"Current heartbeat: {payload.get('heartbeat')}. Light state: {payload.get('light_state')}."
     objects = payload.get('objects_in_world', [])
-    world_block = f"Objects in your immediate vicinity: {json.dumps(objects)}"
+    world_block = f"Objects in your immediate vicinity: {safe_json_dumps(objects)}"
 
     tactile_context = payload.get('tactile_context', '')
     tactile_block = f"TACTILE SENSING: {tactile_context}" if tactile_context else ""
@@ -302,6 +366,11 @@ def build_prompt(payload: dict) -> list:
     relevant = payload.get('relevant_memories', [])
     recent = payload.get('recent_working_memories', [])
     memories_text = "\n".join([format_memory(m) for m in (relevant + recent)])
+
+    # ANTI-CREEP: Hard cap memory text to prevent VRAM overload
+    if len(memories_text) > 3000:
+        memories_text = memories_text[-3000:] + "\n...[OLDER MEMORIES TRUNCATED TO PREVENT VRAM OVERLOAD]"
+
     memory_block = f"MEMORY CONTEXT (Relevant and Recent):\n{memories_text if memories_text else 'No memories recorded yet.'}"
 
     injection = payload.get('pending_injection')
@@ -329,10 +398,14 @@ After your thought stream write exactly: ---ACTION---
 Then the JSON block.
 No text after the JSON.
 
+== STEP-BY-STEP CLOSED-LOOP MOTOR CONTROL (RECOMMENDED) ==
+Execute one deliberate, calculated posture or step adjustment per cycle in "joint_overrides".
+Observe physical and vestibular feedback on the next heartbeat before advancing.
+Do not chain speculative motion frames blindly without intermediate balance feedback.
+
 == JOINT ANGLES — CRITICAL RULES ==
-Joint values can be EITHER a plain integer DEGREE (e.g. 15, -30, 90) which will auto-map to the primary bending axis OR a 3D array of DEGREES [pitch, yaw, roll] for compound movements.
-DO NOT use radians. DO NOT use objects. DO NOT output quaternions like [0.1, 0, 0, 0.99] — that will cause instant physical collapse.
-If using an array, it must be exactly 3 elements [X, Y, Z].
+Joint values must be plain numbers in DEGREES (e.g. 15, -30, 90) representing angular rotation.
+All units are in standard degrees (NOT radians).
 Hard anatomical limits enforced by the physics engine (values outside will be clamped):
   - Spine segments (spine, lumbar, thoracic): -15 to +15 degrees
   - Neck / cervical: -60 to +60 degrees
@@ -349,10 +422,7 @@ Valid joints for overrides: [{joint_list_str}]
 
 CRITICAL JSON RULES — violations will crash the system:
 1. Output strictly valid JSON only. No markdown, no code fences, no trailing characters after the closing brace.
-2. Joint values are PLAIN NUMBERS IN DEGREES. NEVER arrays. NEVER quaternions.
-   WRONG: {{"mixamorigspine": [0, 0, 0, 1]}}
-   WRONG: {{"mixamorigspine": 0.26}}
-   RIGHT: {{"mixamorigspine": 15}}
+2. Joint values are PLAIN NUMBERS IN DEGREES (e.g. {{"mixamorigspine": 15}}).
 3. NEVER use placeholder keys like "joint_name". Each key in joint_overrides MUST be an actual joint name from the valid joints list.
 4. gaze_target, new_motor_program, and flag MUST be at the ROOT level of the JSON, NOT inside "actions".
 5. Output EXACTLY one closing brace at the end. No extra braces, no trailing text.
@@ -410,7 +480,7 @@ JSON SCHEMA:
         {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
         {"role": "user", "content": [
             {"type": "image"}, 
-            {"type": "text", "text": f"Joints: {json.dumps(payload.get('joints'))}"}
+            {"type": "text", "text": f"Joints: {safe_json_dumps(payload.get('joints'), max_chars=4000)}"}
         ]}
     ]
 
@@ -492,15 +562,14 @@ def parse_openai_messages(messages: List[ChatMessage]):
                             try:
                                 img_bytes = base64.b64decode(b64_data)
                                 pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-                                SAFE_SIZE = 448
-                                if pil_img.width != SAFE_SIZE or pil_img.height != SAFE_SIZE:
-                                    pil_img = pil_img.resize((SAFE_SIZE, SAFE_SIZE), Image.Resampling.LANCZOS)
+                                if pil_img.width > SAFE_IMAGE_SIZE or pil_img.height > SAFE_IMAGE_SIZE:
+                                    pil_img.thumbnail((SAFE_IMAGE_SIZE, SAFE_IMAGE_SIZE), Image.Resampling.LANCZOS)
                                 images.append(pil_img)
                                 content_list.append({
                                     "type": "image", 
                                     "image": pil_img, 
-                                    "min_pixels": 256 * 256, 
-                                    "max_pixels": 448 * 448
+                                    "min_pixels": MIN_PIXELS, 
+                                    "max_pixels": MAX_PIXELS
                                 })
                             except Exception as e:
                                 print(f"Error decoding image_url: {e}")
@@ -523,15 +592,13 @@ def generate_legacy_stream(payload: InferPayload):
         }).encode('utf-8')
         return
 
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    clear_gpu_memory()
 
     try:
         image_bytes = base64.b64decode(payload.frame)
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        SAFE_SIZE = 448 
-        if image.width != SAFE_SIZE or image.height != SAFE_SIZE:
-            image = image.resize((SAFE_SIZE, SAFE_SIZE), Image.Resampling.LANCZOS)
+        if image.width > SAFE_IMAGE_SIZE or image.height > SAFE_IMAGE_SIZE:
+            image.thumbnail((SAFE_IMAGE_SIZE, SAFE_IMAGE_SIZE), Image.Resampling.LANCZOS)
     except Exception as e:
         yield f"Error decoding image: {e}".encode('utf-8')
         return
@@ -539,8 +606,8 @@ def generate_legacy_stream(payload: InferPayload):
     payload_dict = payload.model_dump()
     messages = build_prompt(payload_dict)
     messages[-1]["content"][0]["image"] = image
-    messages[-1]["content"][0]["min_pixels"] = 256 * 256
-    messages[-1]["content"][0]["max_pixels"] = 448 * 448
+    messages[-1]["content"][0]["min_pixels"] = MIN_PIXELS
+    messages[-1]["content"][0]["max_pixels"] = MAX_PIXELS
 
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     vision_out = process_vision_info(messages)
@@ -550,41 +617,56 @@ def generate_legacy_stream(payload: InferPayload):
         image_inputs, video_inputs = vision_out
         video_kwargs = {}
 
+    # 2. Process on CPU (Saves VRAM from stacking before lock)
     inputs = processor(
         text=[text],
         images=image_inputs,
         videos=video_inputs,
         padding=True,
-        truncation=False,
+        truncation=True,
+        max_length=8192,
         return_tensors="pt",
         **video_kwargs
     )
-    if torch.cuda.is_available():
-        inputs = inputs.to("cuda")
 
     streamer = TextIteratorStreamer(processor.tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=45.0)
-    generation_kwargs = dict(
-        **inputs, 
-        streamer=streamer, 
-        max_new_tokens=512, 
-        do_sample=True, 
-        temperature=0.7, 
-        top_p=0.9
-    )
 
+    # 3. Move to GPU strictly inside the lock
     def generate_worker():
+        inputs_cuda = None
         try:
             with generation_lock:
+                clear_gpu_memory()
+                if torch.cuda.is_available():
+                    inputs_cuda = {k: v.to("cuda") if hasattr(v, "to") else v for k, v in inputs.items()}
+                else:
+                    inputs_cuda = inputs
+
+                generation_kwargs = dict(
+                    **inputs_cuda, 
+                    streamer=streamer, 
+                    max_new_tokens=512, 
+                    do_sample=True, 
+                    temperature=0.7, 
+                    top_p=0.9
+                )
                 with torch.no_grad():
                     model.generate(**generation_kwargs)
         except Exception as e:
-            print(f"❌ Generation crashed: {e}")
+            print(f"❌ GENERATION THREAD CRASHED: {e}")
             traceback.print_exc()
+            try:
+                streamer.text_queue.put(None)
+            except Exception:
+                pass
         finally:
             try:
                 streamer.end()
             except Exception:
                 pass
+            if inputs_cuda is not None:
+                del inputs_cuda
+            clear_gpu_memory()
 
     thread = threading.Thread(target=generate_worker)
     thread.start()
@@ -594,22 +676,39 @@ def generate_legacy_stream(payload: InferPayload):
     action_started = False
     action_buffer = ""
 
-    for token in streamer:
-        if not action_started:
-            accumulated += token
-            sep_idx = accumulated.find(SEPARATOR)
-            if sep_idx != -1:
-                thought_part = accumulated[:sep_idx + len(SEPARATOR)]
-                yield thought_part.encode('utf-8')
-                action_buffer = accumulated[sep_idx + len(SEPARATOR):]
-                action_started = True
+    try:
+        for token in streamer:
+            if token is None:
+                break
+            if not action_started:
+                accumulated += token
+                sep_idx = accumulated.find(SEPARATOR)
+                if sep_idx != -1:
+                    thought_part = accumulated[:sep_idx + len(SEPARATOR)]
+                    yield thought_part.encode('utf-8')
+                    action_buffer = accumulated[sep_idx + len(SEPARATOR):]
+                    action_started = True
+                else:
+                    safe_len = len(accumulated) - len(SEPARATOR) + 1
+                    if safe_len > 0:
+                        yield accumulated[:safe_len].encode('utf-8')
+                        accumulated = accumulated[safe_len:]
             else:
-                safe_len = len(accumulated) - len(SEPARATOR) + 1
-                if safe_len > 0:
-                    yield accumulated[:safe_len].encode('utf-8')
-                    accumulated = accumulated[safe_len:]
-        else:
-            action_buffer += token
+                action_buffer += token
+    except queue.Empty:
+        print("⚠️ [generate_legacy_stream] TextIteratorStreamer queue.Empty timed out or thread ended abruptly")
+        if not action_started:
+            if accumulated:
+                yield accumulated.encode('utf-8')
+            yield f"\n{SEPARATOR}\n".encode('utf-8')
+            action_started = True
+    except Exception as e:
+        print(f"⚠️ [generate_legacy_stream] Streaming error: {e}")
+    finally:
+        try:
+            thread.join(timeout=1.0)
+        except Exception:
+            pass
 
     if not action_started:
         if accumulated:
@@ -646,8 +745,7 @@ def generate_openai_sse_stream(req: ChatCompletionRequest):
             yield b"data: [DONE]\n\n"
         return mock_sse()
 
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    clear_gpu_memory()
 
     parsed_messages, images = parse_openai_messages(req.messages)
     text = processor.apply_chat_template(parsed_messages, tokenize=False, add_generation_prompt=True)
@@ -665,7 +763,8 @@ def generate_openai_sse_stream(req: ChatCompletionRequest):
             images=image_inputs,
             videos=video_inputs,
             padding=True,
-            truncation=False,
+            truncation=True,
+            max_length=8192,
             return_tensors="pt",
             **video_kwargs
         )
@@ -673,37 +772,50 @@ def generate_openai_sse_stream(req: ChatCompletionRequest):
         inputs = processor(
             text=[text],
             padding=True,
-            truncation=False,
+            truncation=True,
+            max_length=8192,
             return_tensors="pt"
         )
 
-    if torch.cuda.is_available():
-        inputs = inputs.to("cuda")
-
     streamer = TextIteratorStreamer(processor.tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=45.0)
-    generation_kwargs = dict(
-        **inputs,
-        streamer=streamer,
-        max_new_tokens=req.max_tokens or 512,
-        do_sample=True if (req.temperature or 0.7) > 0 else False,
-        temperature=req.temperature if (req.temperature or 0.7) > 0 else None,
-        top_p=req.top_p if (req.temperature or 0.7) > 0 else None,
-    )
-    generation_kwargs = {k: v for k, v in generation_kwargs.items() if v is not None}
 
     def generate_worker():
+        inputs_cuda = None
         try:
             with generation_lock:
+                clear_gpu_memory()
+                if torch.cuda.is_available():
+                    inputs_cuda = {k: v.to("cuda") if hasattr(v, "to") else v for k, v in inputs.items()}
+                else:
+                    inputs_cuda = inputs
+
+                generation_kwargs = dict(
+                    **inputs_cuda,
+                    streamer=streamer,
+                    max_new_tokens=req.max_tokens or 512,
+                    do_sample=True if (req.temperature or 0.7) > 0 else False,
+                    temperature=req.temperature if (req.temperature or 0.7) > 0 else None,
+                    top_p=req.top_p if (req.temperature or 0.7) > 0 else None,
+                )
+                generation_kwargs = {k: v for k, v in generation_kwargs.items() if v is not None}
+
                 with torch.no_grad():
                     model.generate(**generation_kwargs)
         except Exception as e:
-            print(f"❌ Generation crashed: {e}")
+            print(f"❌ GENERATION THREAD CRASHED: {e}")
             traceback.print_exc()
+            try:
+                streamer.text_queue.put(None)
+            except Exception:
+                pass
         finally:
             try:
                 streamer.end()
             except Exception:
                 pass
+            if inputs_cuda is not None:
+                del inputs_cuda
+            clear_gpu_memory()
 
     thread = threading.Thread(target=generate_worker)
     thread.start()
@@ -714,24 +826,43 @@ def generate_openai_sse_stream(req: ChatCompletionRequest):
         action_started = False
         action_buffer = ""
 
-        for token in streamer:
-            if not action_started:
-                accumulated += token
-                sep_idx = accumulated.find(SEPARATOR)
-                if sep_idx != -1:
-                    thought_part = accumulated[:sep_idx]
-                    chunk = {"choices": [{"index": 0, "delta": {"content": thought_part + SEPARATOR + "\n"}}]}
-                    yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
-                    action_buffer = accumulated[sep_idx + len(SEPARATOR):]
-                    action_started = True
-                else:
-                    safe_len = len(accumulated) - len(SEPARATOR) + 1
-                    if safe_len > 0:
-                        chunk = {"choices": [{"index": 0, "delta": {"content": accumulated[:safe_len]}}]}
+        try:
+            for token in streamer:
+                if token is None:
+                    break
+                if not action_started:
+                    accumulated += token
+                    sep_idx = accumulated.find(SEPARATOR)
+                    if sep_idx != -1:
+                        thought_part = accumulated[:sep_idx]
+                        chunk = {"choices": [{"index": 0, "delta": {"content": thought_part + SEPARATOR + "\n"}}]}
                         yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
-                        accumulated = accumulated[safe_len:]
-            else:
-                action_buffer += token
+                        action_buffer = accumulated[sep_idx + len(SEPARATOR):]
+                        action_started = True
+                    else:
+                        safe_len = len(accumulated) - len(SEPARATOR) + 1
+                        if safe_len > 0:
+                            chunk = {"choices": [{"index": 0, "delta": {"content": accumulated[:safe_len]}}]}
+                            yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+                            accumulated = accumulated[safe_len:]
+                else:
+                    action_buffer += token
+        except queue.Empty:
+            print("⚠️ [generate_openai_sse_stream] TextIteratorStreamer queue.Empty timed out or thread ended abruptly")
+            if not action_started:
+                if accumulated:
+                    chunk = {"choices": [{"index": 0, "delta": {"content": accumulated}}]}
+                    yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+                chunk = {"choices": [{"index": 0, "delta": {"content": f"\n{SEPARATOR}\n"}}]}
+                yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+                action_started = True
+        except Exception as e:
+            print(f"⚠️ [generate_openai_sse_stream] Streaming error: {e}")
+        finally:
+            try:
+                thread.join(timeout=1.0)
+            except Exception:
+                pass
 
         if not action_started:
             # If the model didn't emit ---ACTION---, locate first { or provide fallback action
@@ -843,6 +974,8 @@ async def unified_inference(request: Request):
                     }]
                 })
 
+            clear_gpu_memory()
+
             parsed_messages, images = parse_openai_messages(req.messages)
             text = processor.apply_chat_template(parsed_messages, tokenize=False, add_generation_prompt=True)
             vision_out = process_vision_info(parsed_messages)
@@ -853,22 +986,31 @@ async def unified_inference(request: Request):
                 video_kwargs = {}
 
             if image_inputs:
-                inputs = processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, truncation=False, return_tensors="pt", **video_kwargs)
+                inputs = processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, truncation=True, max_length=8192, return_tensors="pt", **video_kwargs)
             else:
-                inputs = processor(text=[text], padding=True, truncation=False, return_tensors="pt")
+                inputs = processor(text=[text], padding=True, truncation=True, max_length=8192, return_tensors="pt")
 
-            if torch.cuda.is_available():
-                inputs = inputs.to("cuda")
+            inputs_cuda = None
+            try:
+                with generation_lock:
+                    clear_gpu_memory()
+                    if torch.cuda.is_available():
+                        inputs_cuda = {k: v.to("cuda") if hasattr(v, "to") else v for k, v in inputs.items()}
+                    else:
+                        inputs_cuda = inputs
 
-            with generation_lock:
-                with torch.no_grad():
-                    generated_ids = model.generate(**inputs, max_new_tokens=req.max_tokens or 256)
-                    generated_ids_trimmed = [
-                        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-                    ]
-                    output_text = processor.batch_decode(
-                        generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                    )[0]
+                    with torch.no_grad():
+                        generated_ids = model.generate(**inputs_cuda, max_new_tokens=req.max_tokens or 256)
+                        generated_ids_trimmed = [
+                            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs_cuda["input_ids"], generated_ids)
+                        ]
+                        output_text = processor.batch_decode(
+                            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                        )[0]
+            finally:
+                if inputs_cuda is not None:
+                    del inputs_cuda
+                clear_gpu_memory()
 
             return JSONResponse({
                 "id": f"chatcmpl-{int(time.time()*1000)}",
@@ -993,13 +1135,19 @@ if __name__ == "__main__":
     os.system("pkill -f 'uvicorn.*8000' 2>/dev/null || true")
     os.system("fuser -k 8000/tcp 2>/dev/null || true")
     time.sleep(2)
-    
-    setup_tunnel()
-    schedule.every(30).minutes.do(save_checkpoint)
-    
+
+    # 1. START UVICORN FIRST
     print("🚀 Starting Uvicorn on port 8000 in a background thread...")
     threading.Thread(target=run_uvicorn_server, daemon=True).start()
-    
+
+    # 2. Wait for Uvicorn to actually boot and bind to the port
+    time.sleep(5)
+
+    # 3. NOW setup the tunnel (it will successfully connect to port 8000)
+    setup_tunnel()
+
+    schedule.every(30).minutes.do(save_checkpoint)
+
     try:
         while True:
             schedule.run_pending()

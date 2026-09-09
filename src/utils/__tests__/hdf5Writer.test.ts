@@ -76,4 +76,33 @@ describe('HDF5 Dataset Writer (RoboMimic / ACT / Diffusion Policy)', () => {
     expect(parsed.data.demo_0.obs.joint_positions.length).toBe(2);
     expect(parsed.data.demo_0.actions.length).toBe(2);
   });
+
+  test('recovers observations from production transition telemetry', () => {
+    const bytes = formatMemoriesToHDF5([{
+      session_id: 'session_production',
+      heartbeat: 7,
+      self_questions: JSON.stringify({
+        observation_after: {
+          proprioception: { current_pose: [1, 2, 3] },
+          joint_velocities: { hip: 0.5 },
+          root_state: { position: [4, 5, 6] },
+          grounded: true,
+        },
+        requested_action: { joint_overrides: { hip: 0.25 } },
+      }),
+      action_taken: { program_sequence: ['walk_forward'], joint_overrides: { hip: 0.25 } },
+      reward_signal: 1,
+      outcome: 'success',
+    }]);
+
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const manifestLength = view.getUint32(8, true);
+    const parsed = JSON.parse(new TextDecoder().decode(bytes.subarray(12, 12 + manifestLength)));
+    const step = parsed.data.demo_0;
+
+    expect(step.obs.joint_positions).toEqual([[1, 2, 3]]);
+    expect(step.obs.root_position).toEqual([[4, 5, 6]]);
+    expect(step.actions).toEqual([[0.25]]);
+    expect(step.action_source).toEqual(['requested_joint_overrides']);
+  });
 });

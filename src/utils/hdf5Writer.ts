@@ -23,6 +23,7 @@ export interface HDF5TrajectoryStep {
   done: boolean;
   thought?: string;
   task?: string;
+  actionSource?: string;
 }
 
 export interface HDF5Episode {
@@ -41,6 +42,8 @@ export function writeHDF5(episodes: HDF5Episode[]): Uint8Array {
   // Create structured JSON manifest describing the HDF5 tensor shapes & datasets
   const manifest = {
     format: 'HDF5',
+    artifact_type: 'SYNTHIA_HDF5_MANIFEST',
+    compatibility: 'JSON manifest package; not a standard h5py-readable HDF5 file',
     version: '1.10.0',
     generator: 'Synthia-Embodied-Engine',
     license: 'Apache-2.0',
@@ -64,6 +67,7 @@ export function writeHDF5(episodes: HDF5Episode[]): Uint8Array {
         is_grounded: ep.steps.map((s) => (s.isGrounded ? 1 : 0)),
       },
       actions: ep.steps.map((s) => s.actions),
+      action_source: ep.steps.map((s) => s.actionSource || 'unknown'),
       rewards: ep.steps.map((s) => s.reward),
       dones: ep.steps.map((s) => (s.done ? 1 : 0)),
       thoughts: ep.steps.map((s) => s.thought || ''),
@@ -105,34 +109,37 @@ export function formatMemoriesToHDF5(memories: any[]): Uint8Array {
   let idx = 0;
   for (const [sessionId, sessionMems] of sessionMap) {
     const steps: HDF5TrajectoryStep[] = sessionMems.map((m, sIdx) => {
-      // Parse joint positions
-      let jointPositions: number[] = [];
-      if (Array.isArray(m.joint_states)) {
-        jointPositions = m.joint_states;
-      } else if (typeof m.joint_states === 'object' && m.joint_states !== null) {
-        jointPositions = Object.values(m.joint_states);
-      }
+      const telemetry = typeof m.self_questions === 'string'
+        ? parseJson(m.self_questions)
+        : (m.self_questions || {});
+      const after = telemetry.observation_after || telemetry.observation || {};
+      const proprioception = after.proprioception || telemetry.proprioception || {};
+      const jointPositions = numericArray(
+        proprioception.current_pose || m.joint_states || parseJointStateSummary(m.joint_state_summary)
+      );
+      const jointVelocities = numericArray(
+        after.joint_velocities || m.joint_velocities || []
+      );
+      const rootPosition = numericTuple(after.root_state?.position || m.root_position);
 
-      // Parse actions
-      let actions: number[] = [];
-      if (Array.isArray(m.action_taken)) {
-        actions = m.action_taken;
-      } else if (typeof m.action_taken === 'object' && m.action_taken !== null) {
-        actions = Object.values(m.action_taken);
-      }
+      const requestedAction = telemetry.requested_action || m.action_taken || {};
+      const actions = numericArray(
+        requestedAction.joint_overrides || requestedAction
+      );
 
       return {
         heartbeat: typeof m.heartbeat === 'number' ? m.heartbeat : sIdx,
         timestamp: (typeof m.heartbeat === 'number' ? m.heartbeat : sIdx) * 0.1,
         jointPositions,
-        jointVelocities: m.joint_velocities || undefined,
-        rootPosition: m.root_position || undefined,
-        is_grounded: m.is_grounded ?? true,
+        jointVelocities: jointVelocities.length > 0 ? jointVelocities : undefined,
+        rootPosition,
+        isGrounded: after.grounded ?? m.is_grounded ?? true,
         actions,
         reward: typeof m.reward_signal === 'number' ? m.reward_signal : 0,
         done: m.outcome === 'success' || m.outcome === 'failure',
         thought: m.thought || '',
         task: m.goal_at_time || 'general_embodied_task',
+        actionSource: 'requested_joint_overrides',
       };
     });
 
@@ -145,4 +152,42 @@ export function formatMemoriesToHDF5(memories: any[]): Uint8Array {
   }
 
   return writeHDF5(episodes);
+}
+
+function parseJson(value: unknown): any {
+  if (typeof value !== 'string') return value || {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+function parseJointStateSummary(value: unknown): number[] {
+  const parsed = parseJson(value);
+  if (Array.isArray(parsed)) return numericArray(parsed);
+  if (!parsed || typeof parsed !== 'object') return [];
+
+  return Object.values(parsed).flatMap((joint: any) => {
+    if (joint && Array.isArray(joint.position)) return numericArray(joint.position);
+    return [];
+  });
+}
+
+function numericArray(value: unknown): number[] {
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is number => typeof entry === 'number' && Number.isFinite(entry));
+  }
+  if (value && typeof value === 'object') {
+    return Object.values(value).flatMap((entry) => {
+      if (typeof entry === 'number' && Number.isFinite(entry)) return [entry];
+      return [];
+    });
+  }
+  return [];
+}
+
+function numericTuple(value: unknown): [number, number, number] | undefined {
+  const values = numericArray(value);
+  return values.length >= 3 ? [values[0], values[1], values[2]] : undefined;
 }

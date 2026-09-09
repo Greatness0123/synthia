@@ -12,7 +12,19 @@ import { useAgentStore } from '../../store/agentStore';
 import { useAgentRuntimeStore } from '../../store/agentRuntimeStore';
 import { useIdentityStore } from '../../store/identityStore';
 import { stripSpeechTags } from '../../utils/speech';
+import { cleanThoughtText } from '../../utils/thoughtUtils';
 import { synthiaToast } from '../../utils/synthiaToast';
+
+function decodeFrameBuffer(frame: unknown): Uint8Array | undefined {
+  if (typeof frame !== 'string' || !frame) return undefined;
+  const encoded = frame.includes(',') ? frame.split(',', 2)[1] : frame;
+  try {
+    const binary = atob(encoded);
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    return undefined;
+  }
+}
 
 interface AgentLoopConfig {
   agentId: string;
@@ -241,6 +253,21 @@ export class AgentLoop {
       this.lastActionFeedback = [];
       this.lastIdentityFeedback = null;
 
+      // Preserve previous uncommitted thought if present before resetting currentThought
+      const existingThought = store.agents?.[this.config.agentId]?.currentThought;
+      if (existingThought && existingThought.trim().length > 10 && store.addThoughtForAgent) {
+        const cleanedPrev = cleanThoughtText(existingThought);
+        if (cleanedPrev) {
+          store.addThoughtForAgent(this.config.agentId, {
+            id: `thought_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            text: cleanedPrev,
+            timestamp: Date.now(),
+            isInjected: false,
+            outcome: 'recorded'
+          });
+        }
+      }
+
       // Clear pending thoughts for this agent in store before writing new stream
       if (store.setCurrentThoughtForAgent) {
         store.setCurrentThoughtForAgent(this.config.agentId, '');
@@ -259,10 +286,11 @@ export class AgentLoop {
       }
 
       console.log(`[AgentLoop (${this.config.agentId})] Inference completed. Parsing action JSON.`);
-      if (result.thoughtTokens && result.thoughtTokens.trim() && store.addThoughtForAgent) {
+      const cleanedThought = cleanThoughtText(result.thoughtTokens || '');
+      if (cleanedThought && store.addThoughtForAgent) {
         store.addThoughtForAgent(this.config.agentId, {
           id: `thought_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-          text: result.thoughtTokens.trim(),
+          text: cleanedThought,
           timestamp: Date.now(),
           isInjected: !!worldState.injected_thought,
         });
@@ -311,6 +339,21 @@ export class AgentLoop {
       }
 
     } catch (err: any) {
+      // Preserve partial thought streamed before error/disconnect occurred
+      const partialThought = store.agents?.[this.config.agentId]?.currentThought;
+      if (partialThought && partialThought.trim().length > 10 && store.addThoughtForAgent) {
+        const cleanedPartial = cleanThoughtText(partialThought);
+        if (cleanedPartial) {
+          store.addThoughtForAgent(this.config.agentId, {
+            id: `thought_err_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            text: cleanedPartial,
+            timestamp: Date.now(),
+            isInjected: !!worldState.injected_thought,
+            outcome: 'interrupted (offline/rate limit)'
+          });
+        }
+      }
+
       const isConnectionError = err?.message?.includes('Failed to fetch') ||
                                 err?.message?.includes('NetworkError') ||
                                 err?.message?.includes('ERR_CONNECTION_REFUSED') ||
@@ -370,6 +413,38 @@ export class AgentLoop {
     cycle.finalized = true;
     this.pendingCycles.delete(cycleId);
     const { result, actionData, worldState } = cycle;
+    let afterState = worldState;
+    try {
+      // Capture the latest physics state when the outcome is finalized. The
+      // initial worldState is the observation that preceded the action.
+      afterState = await this.config.captureWorldState() || worldState;
+    } catch (error) {
+      console.warn(`[AgentLoop (${this.config.agentId})] Post-action capture failed:`, error);
+    }
+
+    const transitionTelemetry = {
+      schema_version: 1,
+      observation_before: {
+        heartbeat: worldState.heartbeat || this.heartbeat,
+        joints: worldState.joints || {},
+        proprioception: worldState.proprioception || null,
+        contact_forces: worldState.contact_forces || {},
+        grounded: worldState.isGrounded ?? null,
+        joint_velocities: worldState.joint_velocities || {},
+        root_state: worldState.root_state || null,
+      },
+      observation_after: {
+        heartbeat: afterState.heartbeat || this.heartbeat,
+        joints: afterState.joints || {},
+        proprioception: afterState.proprioception || null,
+        contact_forces: afterState.contact_forces || {},
+        grounded: afterState.isGrounded ?? null,
+        joint_velocities: afterState.joint_velocities || {},
+        root_state: afterState.root_state || null,
+      },
+      requested_action: actionData.actions || { program_sequence: [], joint_overrides: {} },
+      outcome: outcome.description || outcome || 'unknown',
+    };
 
     const memoryEntry: MemoryEntry = {
       memory_id: actionData.memory_write.memory_id === 'auto' ? `mem_${Date.now()}` : actionData.memory_write.memory_id,
@@ -382,8 +457,8 @@ export class AgentLoop {
         ...(worldState.audio || {}),
         overheard_speech: worldState.overheard_speech || [],
       }),
-      joint_state_summary: JSON.stringify(worldState.joints || {}),
-      self_questions: {},
+      joint_state_summary: JSON.stringify(afterState.joints || worldState.joints || {}),
+      self_questions: transitionTelemetry,
       thought: stripSpeechTags(result.thoughtTokens),
       action_taken: actionData.actions,
       outcome: outcome.description || outcome || 'unknown',
@@ -391,6 +466,7 @@ export class AgentLoop {
       goal_at_time: worldState.currentGoal || '',
       injected: !!worldState.injected_thought,
       session_id: worldState.sessionId || `session_${this.config.agentId}`,
+      frame_buffer: decodeFrameBuffer(worldState.frame),
     };
 
     const writeOk = await this.memoryManager.write(memoryEntry, this.config.agentId);

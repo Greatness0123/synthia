@@ -39,7 +39,7 @@ export const RehydrationModal: React.FC = () => {
           </motion.div>
 
           <h2 className="text-xl font-serif text-text-primary tracking-tight">
-            SYNTHIA is waking up...
+            Agent is waking up...
           </h2>
 
           <div className="w-full min-h-[100px] p-4 bg-bg-panel border border-white/10 rounded-panel text-left">

@@ -98,6 +98,7 @@ interface AgentStoreState {
   setUseMultiBodyPDForAgent: (id: string, enable: boolean) => void;
   setUseActionDictionaryForAgent: (id: string, enable: boolean) => void;
   clearThoughtsForAgent: (id: string) => void;
+  clearMemoriesForAgent: (id: string) => void;
 
   // ── Mirrored Actions on the currently active agent ─
   addThought: (thought: Thought) => void;
@@ -123,6 +124,7 @@ interface AgentStoreState {
   setBodyMode: (mode: 'rigid' | 'ragdoll') => void;
   setUseMultiBodyPD: (enable: boolean) => void;
   clearThoughts: () => void;
+  clearMemories: () => void;
 }
 
 const initialAgentId = 'agent_0';
@@ -219,6 +221,8 @@ export const useAgentStore = create<AgentStoreState>()(
 
         clearThoughtsForAgent: (id) => set((state) => updateAgent(state, id, { thoughts: [] })),
 
+        clearMemoriesForAgent: (id) => set((state) => updateAgent(state, id, { memories: [] })),
+
         addMemoryForAgent: (id, memory) => set((state) => updateAgent(state, id, {
           memories: [...(state.agents[id]?.memories || []), memory],
         })),
@@ -287,6 +291,9 @@ export const useAgentStore = create<AgentStoreState>()(
         },
         clearThoughts: () => {
           get().clearThoughtsForAgent(get().activeAgentId);
+        },
+        clearMemories: () => {
+          get().clearMemoriesForAgent(get().activeAgentId);
         },
         addMemory: (memory) => {
           get().addMemoryForAgent(get().activeAgentId, memory);
@@ -357,8 +364,16 @@ export const useAgentStore = create<AgentStoreState>()(
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
+        // Clear thoughts from every agent so they don't survive a reload
+        if (state.agents) {
+          Object.values(state.agents).forEach((agent: any) => {
+            agent.thoughts = [];
+            agent.currentThought = '';
+          });
+        }
         const active = state.agents[state.activeAgentId] || createDefaultAgent(state.activeAgentId);
-        state.thoughts = active.thoughts || [];
+        state.thoughts = [];
+        state.currentThought = '';
         state.memories = active.memories || [];
         state.skills = active.skills || [];
         state.masteredSkills = active.skills || [];
@@ -367,7 +382,6 @@ export const useAgentStore = create<AgentStoreState>()(
         state.directiveMode = active.directiveMode ?? 'free_will';
         state.heartbeat = active.heartbeat ?? 0;
         state.status = 'idle';
-        state.currentThought = '';
       },
     }
   )

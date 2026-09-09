@@ -628,7 +628,7 @@ export const ExportModal: React.FC = () => {
                       exit={{ height: 0, opacity: 0 }}
                       className="text-xs text-text-tertiary bg-white/5 p-2.5 rounded border border-border-subtle leading-normal"
                     >
-                      SYNTHIA saves thoughts and context to specific memory tiers: Tier 1 is Working Memory (short-term), Tier 2 is Episodic Memory (medium-term), and Tier 3 is Long-term/Archival Memory. Select which tiers are included in the export.
+                      The agent saves thoughts and context to specific memory tiers: Tier 1 is Working Memory (short-term), Tier 2 is Episodic Memory (medium-term), and Tier 3 is Long-term/Archival Memory. Select which tiers are included in the export.
                     </motion.p>
                   )}
                 </AnimatePresence>

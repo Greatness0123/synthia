@@ -27,50 +27,58 @@ export class PayloadBuilder {
 
   private heartbeatCounter: number = 0;
 
+  private previousJoints: Record<string, any> = {};
+  private static SPATIAL_ANCHORS = ['mixamorighead', 'mixamorigspine', 'mixamorighips', 'mixamorigleftupleg', 'mixamorigrightupleg'];
+  private static JOINT_DELTA_THRESHOLD = 2.0;
+
   /**
-   * Build a natural-language description of contact forces for every bone.
-   * Reports both active contact and no-contact for complete proprioceptive awareness.
+   * Compressed tactile context: only report contacts with impulse > 1.0 N·s.
+   * Drops the 80-bone "not in contact" noise.
    */
-  private buildTactileContext(contactForces: Record<string, any>, joints: Record<string, any>): string {
-    const allBoneNames = Object.keys(joints);
-    if (allBoneNames.length === 0) {
-      const entries = Object.entries(contactForces);
-      if (entries.length === 0) return 'No active contact — you are not touching anything.';
-      // Fallback: just report what's in contactForces
-      const lines: string[] = [];
-      for (const [bodyPart, data] of entries) {
-        if (!data.contact || !data.impulse_magnitude) continue;
+  private buildTactileContext(contactForces: Record<string, any>): string {
+    const entries = Object.entries(contactForces);
+    if (entries.length === 0) return 'Tactile: No active contact.';
+
+    const active = entries
+      .filter(([, data]: [string, any]) => data.contact && data.impulse_magnitude > 1.0)
+      .map(([part, data]: [string, any]) => {
         const mag = data.impulse_magnitude;
         let label: string;
-        if (mag < 1) label = 'light touch';
-        else if (mag < 5) label = 'moderate force';
-        else if (mag < 20) label = 'firm contact';
-        else label = 'strong ground support';
-        const partName = bodyPart.replace('capsule_body', 'body').replace(/_/g, ' ').replace('mixamorig', '');
-        lines.push(`Your ${partName} is pressing against ${data.touching || 'something'} with ${label} (${mag.toFixed(1)} N·s).`);
-      }
-      return lines.length > 0 ? lines.join(' ') : 'No active contact — you are not touching anything.';
+        if (mag > 20) label = 'strong ground support';
+        else if (mag > 5) label = 'firm contact';
+        else label = 'moderate force';
+        const name = part.replace('capsule_body', 'body').replace(/_/g, ' ').replace('mixamorig', '');
+        return `${name}: ${label} (${mag.toFixed(1)} N·s)`;
+      });
+
+    return active.length > 0
+      ? `Tactile: ${active.join('; ')}.`
+      : 'Tactile: No active contact.';
+  }
+
+  /**
+   * Delta joints: always include spatial anchors, only include others if changed > threshold.
+   * Reduces joints payload from ~80 entries to ~5-15 per tick.
+   */
+  private buildDeltaJoints(currentJoints: Record<string, any>): Record<string, any> {
+    const delta: Record<string, any> = {};
+
+    for (const anchor of PayloadBuilder.SPATIAL_ANCHORS) {
+      if (currentJoints[anchor]) delta[anchor] = currentJoints[anchor];
     }
 
-    const lines: string[] = [];
-    for (const boneName of allBoneNames) {
-      const contactData = contactForces[boneName];
-      const partName = boneName.replace('capsule_body', 'body').replace(/_/g, ' ').replace('mixamorig', '');
-
-      if (contactData && contactData.contact && contactData.impulse_magnitude) {
-        const mag = contactData.impulse_magnitude;
-        let label: string;
-        if (mag < 1) label = 'light touch';
-        else if (mag < 5) label = 'moderate force';
-        else if (mag < 20) label = 'firm contact';
-        else label = 'strong ground support';
-        lines.push(`Your ${partName} is pressing against ${contactData.touching || 'something'} with ${label} (${mag.toFixed(1)} N·s).`);
-      } else {
-        lines.push(`Your ${partName} is not in contact with anything.`);
+    for (const [name, value] of Object.entries(currentJoints)) {
+      if (PayloadBuilder.SPATIAL_ANCHORS.includes(name)) continue;
+      const prev = this.previousJoints[name];
+      if (!prev) {
+        delta[name] = value;
+      } else if (JSON.stringify(prev) !== JSON.stringify(value)) {
+        delta[name] = value;
       }
     }
 
-    return lines.length > 0 ? lines.join(' ') : 'No active contact — you are not touching anything.';
+    this.previousJoints = JSON.parse(JSON.stringify(currentJoints));
+    return delta;
   }
 
   /**
@@ -233,24 +241,14 @@ ADVICE: ${maneuverTip}`;
       contactText = parts.length > 0 ? parts.join('; ') : 'No active contact';
     }
 
-    return `CURRENT BODY STATE:
-Head facing: ${facing} (yaw: ${yawDeg}°)
-Posture: ${postureLabel}
-Vestibular Balance: ${balanceState} [Pitch: ${pitchDeg > 0 ? '+' : ''}${pitchDeg}°, Roll: ${rollDeg > 0 ? '+' : ''}${rollDeg}°]
-Hip height: ${bodyHeight.toFixed(2)}m above floor
-Current heartbeat: ${payload.heartbeat}
-Time of day: ${payload.light_state}
+    let summary = `Body: ${facing} (${yawDeg}°) | ${postureLabel} | Tilt: ${tiltDeg}° ${leanDirection} [P:${pitchDeg}° R:${rollDeg}°] | Hip: ${bodyHeight.toFixed(2)}m | Beat: ${payload.heartbeat} | ${payload.light_state}`;
+    if (situationBlock) summary += ` | ${situationBlock.split('\n')[0]}`;
+    if (objectLines !== 'None detected nearby') summary += ` | Objects: ${objectLines}`;
+    summary += ` | Contact: ${contactText}`;
+    if (overheardSection) summary += ` | Speech: ${overheardList.length} sources`;
 
-${situationBlock}
-${overheardSection}
-OBJECTS WITHIN 5 METRES:
-${objectLines}
-
-CONTACT FORCES:
-${contactText}
-
-NOTE: The image above shows your current first-person view.
-If the view appears blank or shows only one surface, you are likely facing a wall or the floor. Use your joint rotation and contact data above to understand your position.`;
+    if (summary.length > 300) summary = summary.substring(0, 297) + '...';
+    return summary;
   }
 
   public getHeartbeat(): number {
@@ -321,7 +319,17 @@ If the view appears blank or shows only one surface, you are likely facing a wal
       payload.identity_feedback = reason;
     }
 
-    payload.tactile_context = this.buildTactileContext(contactForces, worldState.joints || {});
+    payload.tactile_context = this.buildTactileContext(contactForces);
+
+    // Delta joints: spatial anchors + changed joints only
+    payload._delta_joints = this.buildDeltaJoints(worldState.joints || {});
+
+    // Directive text for hosted API user message (removed from system prompt for caching)
+    if (options.mode === 'training') {
+      payload._directive_text = `DIRECTIVE: TRAINING. Goal: ${options.goal || 'None'}.\n`;
+    } else {
+      payload._directive_text = 'DIRECTIVE: FREE WILL — explore, act, observe every cycle.\n';
+    }
 
     payload.gaze_context = `You control your view by rotating your head (set mixamorighead joint overrides).
 The first-person camera is attached to your head bone. It does NOT move independently.

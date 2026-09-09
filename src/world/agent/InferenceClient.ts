@@ -74,7 +74,12 @@ export class InferenceClient {
   }
 
   private buildOpenAIMessages(payload: any): any[] {
-    const assembled = PromptAssembler.build(payload);
+    const isLocal = this.providerType === 'kaggle'
+                 || this.providerType === 'ollama'
+                 || this.providerType === 'lmstudio';
+    const assembled = isLocal
+      ? PromptAssembler.build(payload)
+      : PromptAssembler.buildCompact(payload);
     const systemText = assembled.systemPrompt;
 
     const userParts: any[] = [];
@@ -102,15 +107,24 @@ export class InferenceClient {
       userParts.push({ type: 'image_url', image_url: { url: imageUrl } });
     }
 
+    const jointsText = payload._delta_joints
+      ? JSON.stringify(payload._delta_joints)
+      : JSON.stringify(payload.joints);
+    const directiveLine = payload._directive_text || '';
     const tactile = payload.tactile_context || 'No tactile data.';
     userParts.push({
       type: 'text',
-      text: `Audio context available. Joints: ${JSON.stringify(payload.joints)}.\nTactile: ${tactile}`
+      text: `${directiveLine}Joints: ${jointsText}.\nTactile: ${tactile}`
     });
 
     const perception = payload.perception_summary || '';
     if (perception) {
       userParts.push({ type: 'text', text: `\nSPATIAL GROUNDING:\n${perception}` });
+    }
+
+    const codex = payload.motor_codex_hints;
+    if (codex) {
+      userParts.push({ type: 'text', text: `\n${codex}` });
     }
 
     const physicalFeedback = payload.physical_feedback;
@@ -186,7 +200,7 @@ export class InferenceClient {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
     }
 
-    const systemText = 'You are SYNTHIA. Respond with exactly: OK';
+    const systemText = 'Respond with exactly: OK';
     const userText = 'Connectivity test. Reply with only the word OK.';
 
     const body = {

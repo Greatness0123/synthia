@@ -1366,6 +1366,28 @@ export const useWorld = (containerRef: React.RefObject<HTMLDivElement>) => {
     const uprightPreset = binder.getUprightPreset();
     const isGrounded = binder.getIsGrounded();
 
+    const capsuleBody = binder.getCapsuleBody();
+    const rootState = capsuleBody?.isValid()
+      ? (() => {
+          const translation = capsuleBody.translation();
+          const rotation = capsuleBody.rotation();
+          const linearVelocity = capsuleBody.linvel();
+          const angularVelocity = capsuleBody.angvel();
+          return {
+            position: [translation.x, translation.y, translation.z],
+            orientation: [rotation.x, rotation.y, rotation.z, rotation.w],
+            linear_velocity: [linearVelocity.x, linearVelocity.y, linearVelocity.z],
+            angular_velocity: [angularVelocity.x, angularVelocity.y, angularVelocity.z],
+          };
+        })()
+      : null;
+
+    const jointVelocities = binder.mbActive
+      ? Object.fromEntries(
+          Array.from(binder.getObservationBuilder().getJointVelocities().entries())
+        )
+      : {};
+
     const agentState = useAgentStore.getState().agents[agentId] || { heartbeat: 0, currentRung: 0, currentGoal: '' };
 
     // ── Overheard Speech (Agent-to-Agent text tunnel) ────────────────────
@@ -1436,6 +1458,8 @@ export const useWorld = (containerRef: React.RefObject<HTMLDivElement>) => {
       objects,
       uprightPreset,
       isGrounded,
+      joint_velocities: jointVelocities,
+      root_state: rootState,
       heartbeat: agentState.heartbeat,
       currentRung: agentState.currentRung,
       bodyType: useWorldStore.getState().bodyType,

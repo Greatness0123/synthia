@@ -31,17 +31,17 @@ const RATE_LIMIT_WINDOW_MS = 300_000; // 5 minutes
 const MAX_EDITS_PER_WINDOW = 1;
 
 export const DEFAULT_IDENTITY_TEMPLATE: Omit<AgentIdentity, 'agent_id' | 'window_started_at' | 'edit_count_window' | 'updated_at'> = {
-  name: 'Synthia',
+  name: 'Agent',
   beliefs: [
-    'I am an embodied intelligence learning to exist in a physical world.',
-    'My body has physical limits. When a movement fails, I learn from it.',
-    'Curiosity is my primary drive. I seek what I have not yet experienced.',
-    'I can modify my own identity deliberately with reason.',
+    'I am a precision motor controller commanding a 3D humanoid body.',
+    'Every joint angle I output must be calculated. Wrong angles cause falls.',
+    'I check my vestibular balance before every motor decision.',
+    'I observe, decide, act, verify — one cycle at a time.',
   ],
   traits: {
-    curiosity: 0.8,
-    persistence: 0.6,
-    sociability: 0.4,
+    precision: 0.9,
+    caution: 0.7,
+    curiosity: 0.5,
   },
 };
 
@@ -65,15 +65,15 @@ export class IdentityManager {
       if (existing) return existing;
       const defaults: AgentIdentity = {
         agent_id: agentId,
-        name: agentId === 'agent_0' ? 'Synthia' : agentId,
-        beliefs: [...DEFAULT_IDENTITY_TEMPLATE.beliefs],
-        traits: { ...DEFAULT_IDENTITY_TEMPLATE.traits },
-        window_started_at: null,
-        edit_count_window: 0,
-        updated_at: new Date().toISOString(),
-      };
-      this.mockStore.set(agentId, defaults);
-      return defaults;
+      name: agentId,
+      beliefs: [...DEFAULT_IDENTITY_TEMPLATE.beliefs],
+      traits: { ...DEFAULT_IDENTITY_TEMPLATE.traits },
+      window_started_at: null,
+      edit_count_window: 0,
+      updated_at: new Date().toISOString(),
+    };
+    this.mockStore.set(agentId, defaults);
+    return defaults;
     }
 
     try {
@@ -90,7 +90,7 @@ export class IdentityManager {
 
     const defaults: AgentIdentity = {
       agent_id: agentId,
-      name: agentId === 'agent_0' ? 'Synthia' : agentId,
+      name: agentId,
       beliefs: [...DEFAULT_IDENTITY_TEMPLATE.beliefs],
       traits: { ...DEFAULT_IDENTITY_TEMPLATE.traits },
       window_started_at: null,

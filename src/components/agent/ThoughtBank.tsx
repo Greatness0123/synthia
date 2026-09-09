@@ -1,13 +1,15 @@
 /**
- * Scrolling stream of agent thoughts.
+ * Scrolling stream of agent thoughts with clean process separation,
+ * Markdown/JSON tag sanitization, and text copy support.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAgentStore } from '../../store/agentStore';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Badge } from '../ui/Badge';
-import { Syringe, ArrowDown } from '../ui/icons';
+import { Syringe, ArrowDown, Copy, Check } from '../ui/icons';
 import { STRINGS } from '../../constants/strings';
+import { cleanThoughtText } from '../../utils/thoughtUtils';
 
 function isNearBottom(el: HTMLElement, threshold = 80): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
@@ -18,6 +20,16 @@ export const ThoughtBank: React.FC = () => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopy = useCallback((text: string, id: string) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => {
+      setCopiedId((curr) => (curr === id ? null : curr));
+    }, 2000);
+  }, []);
 
   const handleScroll = useCallback(() => {
     if (!scrollRef.current) return;
@@ -38,66 +50,106 @@ export const ThoughtBank: React.FC = () => {
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [thoughts, currentThought]);
 
+  const cleanedLiveThought = cleanThoughtText(currentThought);
+
   return (
-    <div className="relative flex-1 flex flex-col min-h-0">
+    <div className="relative flex-1 flex flex-col min-h-0 select-text">
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto p-4 space-y-4"
+        className="flex-1 overflow-y-auto p-4 space-y-3.5 select-text"
       >
         <AnimatePresence initial={false}>
-          {currentThought && (
-            <div className="group mb-4">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs font-mono text-text-tertiary">
-                  [LIVE]
-                </span>
+          {cleanedLiveThought && (
+            <motion.div
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              className="group p-3.5 rounded-xl bg-accent-primary/5 border border-accent-primary/20 shadow-sm transition-all"
+            >
+              <div className="flex items-center justify-between gap-2 mb-2 select-none">
+                <div className="flex items-center gap-2">
+                  <span className="flex h-2 w-2 relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-primary opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-primary"></span>
+                  </span>
+                  <span className="text-[11px] font-mono font-semibold text-accent-primary tracking-wide">
+                    COGNITIVE STREAM [LIVE]
+                  </span>
+                </div>
+                <button
+                  onClick={() => handleCopy(cleanedLiveThought, 'live')}
+                  className="p-1 rounded hover:bg-white/10 text-text-tertiary hover:text-text-primary transition-colors cursor-pointer"
+                  title="Copy thought"
+                  aria-label="Copy thought"
+                >
+                  {copiedId === 'live' ? <Check size={13} className="text-accent-primary" /> : <Copy size={13} />}
+                </button>
               </div>
-              <p className="text-[13px] font-serif leading-relaxed text-text-primary">
-                {currentThought}
+              <p className="text-[13px] font-sans leading-relaxed text-text-primary whitespace-pre-wrap select-text cursor-text">
+                {cleanedLiveThought}
                 <motion.span
                   animate={{ opacity: [0, 1, 0] }}
                   transition={{ duration: 0.8, repeat: Infinity }}
-                  className="inline-block w-1 h-3 ml-0.5 bg-text-primary"
+                  className="inline-block w-1 h-3 ml-1 bg-accent-primary align-middle"
                 />
               </p>
-            </div>
+            </motion.div>
           )}
 
-          {thoughts.map((thought) => (
-            <motion.div
-              key={thought.id}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.15 }}
-              className="group"
-            >
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs font-mono text-text-tertiary">
-                  [{new Date(thought.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]
-                </span>
-                {thought.isInjected && (
-                  <Syringe size={12} className="text-text-secondary" />
-                )}
-              </div>
+          {thoughts.map((thought, index) => {
+            const cleaned = cleanThoughtText(thought.text);
+            if (!cleaned) return null;
 
-              <div className="flex flex-col gap-1.5">
-                <p className="text-[13px] font-serif leading-relaxed text-text-primary">
-                  {thought.text}
-                </p>
+            return (
+              <motion.div
+                key={thought.id || `thought_${index}`}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.15 }}
+                className="group p-3.5 rounded-xl bg-bg-elevated/40 hover:bg-bg-elevated/70 border border-border-subtle/80 hover:border-border transition-all shadow-sm"
+              >
+                <div className="flex items-center justify-between gap-2 mb-2 select-none">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-mono text-text-tertiary font-medium">
+                      [{new Date(thought.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]
+                    </span>
+                    {thought.isInjected && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                        <Syringe size={10} /> DIRECTIVE
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => handleCopy(cleaned, thought.id)}
+                    className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-white/10 text-text-tertiary hover:text-text-primary transition-all cursor-pointer"
+                    title="Copy thought"
+                    aria-label="Copy thought"
+                  >
+                    {copiedId === thought.id ? <Check size={13} className="text-accent-primary" /> : <Copy size={13} />}
+                  </button>
+                </div>
 
-                {thought.outcome && (
-                  <Badge variant="outline" className="w-fit border-border-subtle bg-bg-elevated/50">
-                    {thought.outcome}
-                  </Badge>
-                )}
-              </div>
-            </motion.div>
-          ))}
+                <div className="flex flex-col gap-2">
+                  <p className="text-[13px] font-sans leading-relaxed text-text-primary whitespace-pre-wrap select-text cursor-text">
+                    {cleaned}
+                  </p>
+
+                  {thought.outcome && (
+                    <div className="pt-1 select-none">
+                      <Badge variant="outline" className="text-[10px] font-mono border-border-subtle bg-bg-elevated/60 text-text-secondary">
+                        {thought.outcome}
+                      </Badge>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            );
+          })}
         </AnimatePresence>
 
-        {thoughts.length === 0 && !currentThought && (
-          <div className="h-full flex flex-col items-center justify-center text-center opacity-20">
+        {thoughts.length === 0 && !cleanedLiveThought && (
+          <div className="h-full flex flex-col items-center justify-center text-center opacity-30 py-12 select-none">
             <p className="text-xs font-serif italic text-text-tertiary">{STRINGS.AGENT.VOID_SILENT}</p>
             <p className="text-xs text-text-tertiary mt-2">Configure a provider in Settings to begin cognition.</p>
           </div>
@@ -114,7 +166,7 @@ export const ThoughtBank: React.FC = () => {
           transform: showJump ? 'translateY(0) scale(1)' : 'translateY(6px) scale(0.9)',
           transition: 'opacity 0.2s ease, transform 0.2s ease',
         }}
-        className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg-elevated border border-border shadow-lg text-xs font-medium text-text-secondary hover:text-text-primary hover:border-white/20 hover:bg-bg-elevated/90 z-10"
+        className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg-elevated border border-border shadow-lg text-xs font-medium text-text-secondary hover:text-text-primary hover:border-white/20 hover:bg-bg-elevated/90 z-10 select-none cursor-pointer"
       >
         <ArrowDown size={12} />
         Latest
@@ -122,4 +174,3 @@ export const ThoughtBank: React.FC = () => {
     </div>
   );
 };
-

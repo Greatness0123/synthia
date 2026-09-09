@@ -15,7 +15,7 @@ describe('IdentityManager', () => {
     const identity = await manager.ensureIdentity('agent_0');
     expect(identity).toBeDefined();
     expect(identity.agent_id).toBe('agent_0');
-    expect(identity.name).toBe('Synthia');
+    expect(identity.name).toBe('agent_0');
     expect(identity.beliefs).toEqual(DEFAULT_IDENTITY_TEMPLATE.beliefs);
     expect(identity.traits).toEqual(DEFAULT_IDENTITY_TEMPLATE.traits);
     expect(identity.edit_count_window).toBe(0);
@@ -36,7 +36,7 @@ describe('IdentityManager', () => {
     expect(log.length).toBe(1);
     expect(log[0].agent_id).toBe('agent_0');
     expect(log[0].field).toBe('name');
-    expect(log[0].old_value).toBe('Synthia');
+    expect(log[0].old_value).toBe('agent_0');
     expect(log[0].new_value).toBe('Echo');
     expect(log[0].reason).toBe('Self-naming during first interaction');
   });

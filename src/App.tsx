@@ -31,7 +31,7 @@ import { ExportModal } from './components/export/ExportModal';
 import { AgentSettingsModal } from './components/agent/AgentSettingsModal';
 import { MotorCodexModal } from './components/agent/MotorCodexModal';
 import { LogViewer } from './components/agent/LogViewer';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useDragControls } from 'framer-motion';
 import { useEffect } from 'react';
 import * as Tone from 'tone';
 import { cn } from './utils/cn';
@@ -62,6 +62,7 @@ function App() {
   const { cameraMode, setCameraMode } = useWorldStore();
   const { globalTtsEnabled, setGlobalTtsEnabled } = useSpeechStore();
   const activeAgentId = useAgentStore((state) => state.activeAgentId);
+  const inspectorDragControls = useDragControls();
 
   // Initialize browser-native Web Speech synthesis voices
   useEffect(() => {
@@ -222,18 +223,23 @@ function App() {
             exit={{ opacity: 0, x: 8 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
             drag
+            dragListener={false}
+            dragControls={inspectorDragControls}
             dragMomentum={false}
             dragElastic={0}
             dragConstraints={{ top: -200, left: -600, right: 200, bottom: 400 }}
             data-tour="agent-inspector-panel"
-            className="fixed top-[10vh] right-[5vw] w-[380px] max-w-[calc(100vw-5rem)] h-[80vh] max-h-[calc(100vh-2rem)] bg-bg-panel border border-white/10 rounded-modal z-[60] flex flex-col overflow-hidden cursor-grab active:cursor-grabbing"
+            className="fixed top-[10vh] right-[5vw] w-[380px] max-w-[calc(100vw-5rem)] h-[80vh] max-h-[calc(100vh-2rem)] bg-bg-panel border border-white/10 rounded-modal z-[60] flex flex-col overflow-hidden select-text"
           >
             {/* Header - drag handle */}
-            <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 shrink-0 cursor-grab">
+            <div 
+              onPointerDown={(e) => inspectorDragControls.start(e)}
+              className="flex items-center justify-between px-4 py-2 border-b border-white/10 shrink-0 cursor-grab active:cursor-grabbing select-none"
+            >
               <AgentStatus />
               <button
                 onClick={() => setRightPanelOpen(false)}
-                className="w-6 h-6 rounded-full flex items-center justify-center hover:bg-white/10 transition-colors"
+                className="w-6 h-6 rounded-full flex items-center justify-center hover:bg-white/10 transition-colors cursor-pointer"
                 aria-label="Close Agent Inspector"
               >
                 <X size={16} className="text-text-tertiary" />

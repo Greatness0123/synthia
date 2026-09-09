@@ -114,7 +114,7 @@ export const TaskInput: React.FC = () => {
               </span>
             </div>
           ) : (
-            <span className="text-xs text-text-tertiary">Give SYNTHIA a task...</span>
+            <span className="text-xs text-text-tertiary">Give the agent a task...</span>
           )}
           {isActive && (
             <span className="w-1.5 h-1.5 rounded-full bg-text-primary animate-pulse" />
@@ -196,7 +196,7 @@ export const TaskInput: React.FC = () => {
         value={localValue}
         onChange={(e) => setLocalValue(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder={hasProvider ? (hasVideoTask ? "Video demonstration goal active..." : "Give SYNTHIA a task or import video...") : "Set up an inference provider first"}
+        placeholder={hasProvider ? (hasVideoTask ? "Video demonstration goal active..." : "Give the agent a task or import video...") : "Set up an inference provider first"}
         disabled={!hasProvider}
         className={cn(
           "flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-tertiary",

@@ -28,6 +28,7 @@ export {
   Download as DownloadSimple,
   Upload as UploadSimple,
   Download as Export,
+  ContentCopy as Copy,
 
   // Status / Feedback
   Check,
