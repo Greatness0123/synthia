@@ -32,7 +32,8 @@ import { AgentSettingsModal } from './components/agent/AgentSettingsModal';
 import { MotorCodexModal } from './components/agent/MotorCodexModal';
 import { LogViewer } from './components/agent/LogViewer';
 import { motion, AnimatePresence, useDragControls } from 'framer-motion';
-import { useEffect } from 'react';
+import { useEffect, useState, useRef } from 'react';
+import { useMediaQuery } from './hooks/useMediaQuery';
 import * as Tone from 'tone';
 import { cn } from './utils/cn';
 import { TaskInput } from './components/layout/TaskInput';
@@ -63,6 +64,9 @@ function App() {
   const { globalTtsEnabled, setGlobalTtsEnabled } = useSpeechStore();
   const activeAgentId = useAgentStore((state) => state.activeAgentId);
   const inspectorDragControls = useDragControls();
+  const isWide = useMediaQuery('(min-width: 768px)');
+  const [cameraDropdownOpen, setCameraDropdownOpen] = useState(false);
+  const cameraDropdownRef = useRef<HTMLDivElement>(null);
 
   // Initialize browser-native Web Speech synthesis voices
   useEffect(() => {
@@ -71,14 +75,39 @@ function App() {
 
   useEffect(() => {
     const resumeAudio = async () => {
-      await Tone.start();
-      if ((window as any)._synthia_audio_engine) {
-        await (window as any)._synthia_audio_engine.initialize();
+      try {
+        await Tone.start();
+        if ((window as any)._synthia_audio_engine) {
+          await (window as any)._synthia_audio_engine.initialize();
+        }
+        document.removeEventListener('click', resumeAudio);
+      } catch (err) {
+        console.warn('[SYNTHIA] Failed to resume AudioContext on click:', err);
       }
-      document.removeEventListener('click', resumeAudio);
     };
     document.addEventListener('click', resumeAudio);
     return () => document.removeEventListener('click', resumeAudio);
+  }, []);
+
+  // Re-resume AudioContext when tab regains visibility (browsers auto-suspend hidden tabs)
+  useEffect(() => {
+    const onVisibilityChange = async () => {
+      if (document.visibilityState === 'visible') {
+        try {
+          const ctx = Tone.getContext().rawContext as AudioContext;
+          if (ctx.state === 'suspended') {
+            await ctx.resume();
+          }
+          if ((window as any)._synthia_audio_engine) {
+            await (window as any)._synthia_audio_engine.initialize();
+          }
+        } catch (err) {
+          console.warn('[SYNTHIA] Failed to resume AudioContext on visibility change:', err);
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, []);
 
   // Apply theme class to root element
@@ -182,28 +211,75 @@ function App() {
       </div>
 
       {/* Camera Controls Pill - Top Right */}
-      <div data-tour="camera-modes" className="fixed top-4 right-4 glassmorphism rounded-full flex items-center p-1 z-50">
-        {[
-          { mode: 'third_person', icon: Camera, label: '3RD' },
-          { mode: 'first_person', icon: VideoCamera, label: '1ST' },
-          { mode: 'model_input', icon: Monitor, label: '2ND' },
-        ].map(({ mode, icon: Icon, label }) => (
+      {isWide ? (
+        <div data-tour="camera-modes" className="fixed top-4 right-4 glassmorphism rounded-full flex items-center p-1 z-50">
+          {[
+            { mode: 'third_person', icon: Camera, label: '3RD' },
+            { mode: 'first_person', icon: VideoCamera, label: '1ST' },
+            { mode: 'model_input', icon: Monitor, label: '2ND' },
+          ].map(({ mode, icon: Icon, label }) => (
+            <button
+              key={mode}
+              onClick={() => setCameraMode(mode as CameraMode)}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-all",
+                cameraMode === mode
+                  ? "bg-white/10 text-text-primary"
+                  : "text-text-tertiary hover:text-text-secondary hover:bg-white/5"
+              )}
+              aria-label={`Camera Mode ${label}`}
+            >
+              <Icon size={14} />
+              <span className="text-xs font-medium">{label}</span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div ref={cameraDropdownRef} className="fixed top-4 right-4 z-50">
           <button
-            key={mode}
-            onClick={() => setCameraMode(mode as CameraMode)}
+            onClick={() => setCameraDropdownOpen(!cameraDropdownOpen)}
             className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 rounded-full transition-all",
-              cameraMode === mode
-                ? "bg-white/10 text-text-primary"
-                : "text-text-tertiary hover:text-text-secondary hover:bg-white/5"
+              "glassmorphism rounded-full flex items-center gap-1.5 px-3 py-1.5 transition-all",
+              cameraDropdownOpen ? "bg-white/15 text-text-primary" : "text-text-secondary hover:text-text-primary"
             )}
-            aria-label={`Camera Mode ${label}`}
+            aria-label="Camera Mode"
           >
-            <Icon size={14} />
-            <span className="text-xs font-medium">{label}</span>
+            {cameraMode === 'third_person' && <Camera size={14} />}
+            {cameraMode === 'first_person' && <VideoCamera size={14} />}
+            {cameraMode === 'model_input' && <Monitor size={14} />}
+            <span className="text-xs font-medium">CAM</span>
           </button>
-        ))}
-      </div>
+          {cameraDropdownOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setCameraDropdownOpen(false)} />
+              <div className="absolute right-0 top-full mt-2 glassmorphism rounded-xl p-1 z-50 min-w-[120px]">
+                {[
+                  { mode: 'third_person', icon: Camera, label: '3RD' },
+                  { mode: 'first_person', icon: VideoCamera, label: '1ST' },
+                  { mode: 'model_input', icon: Monitor, label: '2ND' },
+                ].map(({ mode, icon: Icon, label }) => (
+                  <button
+                    key={mode}
+                    onClick={() => {
+                      setCameraMode(mode as CameraMode);
+                      setCameraDropdownOpen(false);
+                    }}
+                    className={cn(
+                      "flex items-center gap-2 w-full px-3 py-2 rounded-lg transition-all text-left",
+                      cameraMode === mode
+                        ? "bg-white/10 text-text-primary"
+                        : "text-text-tertiary hover:text-text-secondary hover:bg-white/5"
+                    )}
+                  >
+                    <Icon size={14} />
+                    <span className="text-xs font-medium">{label}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Task Input Pill - Bottom Center */}
       <TaskInput />

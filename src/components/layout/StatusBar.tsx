@@ -3,6 +3,7 @@ import { useAgentStore } from '../../store/agentStore';
 import { useAgentRuntimeStore } from '../../store/agentRuntimeStore';
 import { useMemoryStore } from '../../store/memoryStore';
 import { cn } from '../../utils/cn';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
 
 const Metric = ({ label, value, colorClass = "text-text-secondary" }: { label: string, value: string | number, colorClass?: string }) => (
   <div className="flex items-center gap-1.5 px-2.5 h-full border-r border-white/10 last:border-r-0">
@@ -21,6 +22,7 @@ export const StatusBar: React.FC = () => {
   const loopState = useAgentRuntimeStore((s) => s.loopStates[activeAgentId] || 'not_started');
   const cycleMs = useAgentRuntimeStore((s) => s.configs[activeAgentId]?.cycleMs ?? useConnectionStore.getState().cycleMs ?? 2000);
   const snapshot = useMemoryStore((s) => s.snapshot);
+  const isWide = useMediaQuery('(min-width: 768px)');
 
   const loopColor = loopState === 'running' ? 'text-text-primary font-medium'
     : loopState === 'error' ? 'text-text-primary opacity-60'
@@ -61,34 +63,38 @@ export const StatusBar: React.FC = () => {
         label="Cycle"
         value={`${(cycleMs / 1000).toFixed(1)}s`}
       />
-      <Metric
-        label="Frame"
-        value={frameSize != null && frameSize > 0 ? `${(frameSize / 1024).toFixed(1)}KB` : '--'}
-      />
+      {isWide && (
+        <>
+          <Metric
+            label="Frame"
+            value={frameSize != null && frameSize > 0 ? `${(frameSize / 1024).toFixed(1)}KB` : '--'}
+          />
 
-      {/* Platform memory: single unified indicator */}
-      <div className="flex items-center gap-1.5 px-2.5 h-full border-r border-white/10 last:border-r-0">
-        <span className="text-xs text-text-tertiary">Mem</span>
-        {memMB != null ? (
-          <div className="flex items-center gap-1.5">
-            <span className={cn("text-xs font-mono", memColor)}>
-              {memMB < 1024 ? `${memMB.toFixed(0)}m` : `${(memMB / 1024).toFixed(1)}g`}
-            </span>
-            {memPct != null && (
-              <div className="w-12 h-1.5 bg-white/10 rounded-full overflow-hidden">
-                <div
-                  className={cn("h-full rounded-full transition-all duration-500", memBarColor)}
-                  style={{ width: `${Math.min(memPct, 100)}%` }}
-                />
+          {/* Platform memory: single unified indicator */}
+          <div className="flex items-center gap-1.5 px-2.5 h-full border-r border-white/10 last:border-r-0">
+            <span className="text-xs text-text-tertiary">Mem</span>
+            {memMB != null ? (
+              <div className="flex items-center gap-1.5">
+                <span className={cn("text-xs font-mono", memColor)}>
+                  {memMB < 1024 ? `${memMB.toFixed(0)}m` : `${(memMB / 1024).toFixed(1)}g`}
+                </span>
+                {memPct != null && (
+                  <div className="w-12 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                    <div
+                      className={cn("h-full rounded-full transition-all duration-500", memBarColor)}
+                      style={{ width: `${Math.min(memPct, 100)}%` }}
+                    />
+                  </div>
+                )}
               </div>
+            ) : (
+              <span className="text-xs font-mono text-text-secondary">--</span>
             )}
           </div>
-        ) : (
-          <span className="text-xs font-mono text-text-secondary">--</span>
-        )}
-      </div>
 
-      <Metric label="HB" value={heartbeat} />
+          <Metric label="HB" value={heartbeat} />
+        </>
+      )}
     </div>
   );
 };

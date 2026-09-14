@@ -5,6 +5,7 @@ export class AudioEngine {
   private masterOutput: any = null;
   private analyser: Tone.Analyser | null = null;
   private initialized = false;
+  private contextStateHandler: (() => void) | null = null;
 
   // ── Collision sound rate-limiting and node tracking ────────────────────
   private lastCollisionSoundAt: number = 0;
@@ -20,11 +21,23 @@ export class AudioEngine {
     if (this.initialized) return;
 
     try {
-      this.masterOutput = (Tone.getContext().rawContext as AudioContext).createMediaStreamDestination();
+      const rawCtx = Tone.getContext().rawContext as AudioContext;
+      this.masterOutput = rawCtx.createMediaStreamDestination();
 
       this.analyser = new Tone.Analyser("waveform", 2048);
       Tone.getDestination().connect(this.analyser);
       Tone.getDestination().connect(this.masterOutput);
+
+      // Monitor AudioContext state for errors (device disconnect, renderer failure)
+      if (!this.contextStateHandler) {
+        this.contextStateHandler = () => {
+          if (rawCtx.state === 'closed' || rawCtx.state === 'interrupted') {
+            Logger.warn(`AudioEngine: AudioContext entered "${rawCtx.state}" state — marking as uninitialized`);
+            this.initialized = false;
+          }
+        };
+        rawCtx.addEventListener('statechange', this.contextStateHandler);
+      }
 
       this.initialized = true;
       Logger.info('AudioEngine: Tone.js initialized');
@@ -35,6 +48,14 @@ export class AudioEngine {
 
   public playCollisionSound(impact: number): void {
     if (!this.initialized || impact < 0.5) return;
+
+    // Guard against broken AudioContext
+    try {
+      const ctx = Tone.getContext().rawContext as AudioContext;
+      if (ctx.state !== 'running') return;
+    } catch {
+      return;
+    }
 
     // Rate-limit collision sounds to prevent node accumulation
     const now = performance.now();
@@ -79,6 +100,14 @@ export class AudioEngine {
   public async getBuffer(): Promise<Float32Array | null> {
     if (!this.initialized || !this.analyser) return null;
 
+    // Guard against broken AudioContext
+    try {
+      const ctx = Tone.getContext().rawContext as AudioContext;
+      if (ctx.state !== 'running') return null;
+    } catch {
+      return null;
+    }
+
     const data = this.analyser.getValue() as Float32Array;
     const rms = Math.sqrt(data.reduce((s, v) => s + v*v, 0) / data.length);
     if (rms < 0.001) return null;  
@@ -100,6 +129,17 @@ export class AudioEngine {
       }
     }
     this.activeCollisionNodes = [];
+
+    // Remove statechange listener
+    if (this.contextStateHandler) {
+      try {
+        const rawCtx = Tone.getContext().rawContext as AudioContext;
+        rawCtx.removeEventListener('statechange', this.contextStateHandler);
+      } catch {
+        // context may already be closed
+      }
+      this.contextStateHandler = null;
+    }
 
     if (this.analyser) {
       this.analyser.dispose();
