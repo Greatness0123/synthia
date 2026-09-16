@@ -1,0 +1,162 @@
+# Balancing a Language-Model-Directed Humanoid in the Browser: A Layered Real-Time Control Architecture, Failure-Mode Analysis, and a Validated Bridge to Robot-Learning Tooling
+
+**Greatness Okorie**
+Bells University of Technology, Ota, Ogun State, Nigeria
+`okorie.greatness@bellsuniversity.edu.ng`
+ORCID: 0009-0007-0940-123X
+
+## Abstract
+
+When a large language model issues semantic motor commands to a legged body, something else has to keep that body upright, since LLM inference is far too slow to run a balance loop directly. This report documents that "something else": a four-layer, two-rate real-time balance controller for an approximately 80-degree-of-freedom articulated humanoid, running client-side in a browser on top of MuJoCo compiled to WebAssembly, and the interface through which an external LLM's slow, discrete intent is executed by a much faster control loop. The four layers are a root-capsule orientation torque balancer, per-joint PD position servoing across 49 actuated joints, a physical reaction-mass balance system (an 18 kg mass sliding on two perpendicular rails, driven independently at the physics rate), and a center-of-mass lean-reflex and stepping-recovery layer whose stability metric is the standard capture-point construction from the bipedal locomotion literature. We report two specific failure modes discovered during development, at the mechanism level rather than the symptom level: a balance-authority arbitration defect in which a documented gait-scaling flag is never read by the code path that would invoke it, so the root balancer runs at full authority even during commanded motion; and a structural failure in the stepping-recovery layer in which corrective lean saturates before the swing leg's knee extensor can clear the foot from the ground. We treat this failure analysis, not a claim that the system works, as the report's main contribution, and we report exact gains, thresholds, and code-level identifiers for both. The one claim we consider fully verified and citable without qualification is narrower: trajectories recorded by the system, regardless of per-episode balance outcome, export losslessly into the Hugging Face `lerobot` schema and load into standard imitation-learning dataloaders without modification.
+
+## 1. Introduction
+
+A growing body of work uses large pre-trained vision-language models as the reasoning core of a robot policy, prompting or fine-tuning them to produce plans, sub-tasks, or direct action tokens from visual and language input [1, 2, 3, 4]. Zawalski et al. [4] recently showed that forcing such a model to reason step-by-step, grounded in visual features like object bounding boxes and end-effector position, substantially improves generalization on manipulation tasks. That line of work generally assumes a policy that outputs actions at a rate compatible with, or slower than, a robot's native control loop, and that a competent low-level controller either already exists or is learned end-to-end from demonstration.
+
+That assumption is harder to satisfy for a free-standing, high-degree-of-freedom humanoid than for a fixed-base manipulator arm. A body that receives a semantic instruction such as "step forward" from a language model has to translate that instruction into joint torques while simultaneously not falling over, at a control rate the language model itself cannot supply, because LLM inference over a network is orders of magnitude slower than the millisecond-scale rate a legged body needs for balance. This report is about that translation layer: how it is structured, how the rate mismatch between an LLM and a physical control loop is handled, and, in the same amount of detail as the successes, how and why the current implementation fails to recover balance in certain conditions.
+
+The system this report documents, Synthia [17], runs entirely in a browser tab: the physics simulation is MuJoCo compiled to WebAssembly, stepped at a fixed 500 Hz (2 ms) timestep with an implicit-fast integrator and 200 solver iterations, and rendering runs separately at 60 Hz. That deployment choice is not the contribution of this report and is described only briefly in Section 3; a companion report addresses the browser-native accessibility question directly. The contribution here is the control architecture itself, the documented failure modes, and the one verified downstream-compatibility result.
+
+Contributions:
+
+1. A description of a four-layer, two-rate real-time balance control architecture, including a physical reaction-mass balancing system, and the interface by which a slower, external LLM sets motor intent that this architecture must execute while remaining upright.
+2. A mechanistic account, with exact gains and code-level identifiers, of two specific, currently unresolved failure modes in that architecture, offered as a diagnostic resource for others implementing similar layered stacks.
+3. A validated result showing that trajectories generated by the system, regardless of per-episode success, serialize into the Hugging Face LeRobot schema [8] and load into standard PyTorch dataloaders without modification.
+
+## 2. Related Work
+
+**Balance and push-recovery control for legged robots.** The capture point, the point on the ground where a biped must step to bring its center of mass to rest, was introduced by Pratt et al. [5] as a way to reason about when a standing controller must transition to a stepping response, using the linear inverted pendulum construction $\text{CP} = x_{\text{COM}} + \dot{x}_{\text{COM}} \cdot \tau$, where $\tau = \sqrt{h/g}$ for pendulum height $h$. Subsequent work formalized capture-point tracking as a feedback control law with proven exponential stability [6] and extended it to model-predictive formulations respecting zero-moment-point constraints during recovery [7]. Our system's built-in diagnostic recorder computes this exact quantity, tau and capture point, from live center-of-mass position and velocity, which makes the correspondence to this literature a direct implementation match rather than a loose analogy; Section 5.2 discusses where our simplified, heuristic stepping-recovery layer departs from a full capture-point controller and why that departure currently fails.
+
+**Physics simulation for robot learning.** MuJoCo [9] is the standard engine for contact-rich rigid-body control research and is the physics engine this work compiles to WebAssembly. PyBullet [10], Isaac Sim [11], Habitat [12], and PyRep [13] serve similar or adjacent roles, generally with local-installation and, for the higher-fidelity options, GPU-dependent execution.
+
+**Vision-language-action models and embodied reasoning.** RT-1 [14] and RT-2 [1] demonstrated that transformer policies trained or fine-tuned on internet-scale vision-language data can control real robot arms from natural language instructions. OpenVLA [2] provided a fully open-source vision-language-action model on a Llama-2 backbone, which Zawalski et al. [4] extended with embodied chain-of-thought reasoning, interleaving sub-task planning with visually grounded predictions before emitting an action. Our system differs in embodiment (a free-standing humanoid rather than a fixed-base arm) and in where reasoning sits relative to control: the LLM sets semantic motor intent at a rate far below the physics control rate, and a separate, conventionally engineered layer, not the language model, is responsible for keeping that intent physically viable.
+
+**Standardized robot-learning data.** Open X-Embodiment [15] and DROID [16] aggregate large-scale real-world manipulation trajectories, and the Hugging Face LeRobot project [8] has become a widely used schema and library for organizing such trajectories for imitation learning. Section 6 reports a direct compatibility test against this schema.
+
+## 3. System Overview
+
+Synthia instantiates the architecture described in this report on a single embodiment: an articulated humanoid with 49 actuated joints (52 joints total including the 6-DOF root free joint and two inert toe-base passthroughs that carry no actuator), simulated with MuJoCo compiled to WebAssembly and rendered with Three.js/WebGL, entirely client-side with no local installation step. The agent loop assembles an observation from physics state, proprioception, and an offscreen 448x448 perception render; sends that observation to an external, user-configured LLM over its provider API; parses the returned high-level motor intent, clamping joint angles to $\pm\pi$; and hands that intent to the control architecture in Section 4. Every resulting transition is logged as a structured trajectory point for later export (Section 6). Multiple agents can share one physics world via a prefixed-namespace MJCF scheme (`agent_0_...`, `agent_1_...`); neither multi-agent operation nor the scripted-controller fallback mode is the subject of this report.
+
+## 4. Layered Balance Control Architecture
+
+The control architecture runs at two rates: a 500 Hz physics-control loop, in which all four layers below execute and apply torques or forces, and a 60 Hz render/pose-flush loop. This separation exists because balance is a fast-timescale problem: a body that only corrects at 60 Hz cannot reject disturbances at the rate a humanoid's own contacts generate them, and because commanded joint targets from a 60 Hz pose flush must never overwrite the reaction-mass actuators that the 500 Hz layer below is writing to independently (Section 4.3).
+
+### 4.1 Root-capsule orientation torque balancer
+
+The root of the body is modeled as a capsule (15 kg), and a torque is applied to it via `xfrc_applied` proportional to its deviation from upright plus a damping term proportional to its angular velocity: default gains $k_p = 800$, $k_d = 320$, with an applied-torque cap of 120 N·m. This layer is the first line of defense against small disturbances and, as configured, is intended to run at reduced authority during commanded gait; Section 5.1 documents why that intended reduction never actually occurs at runtime.
+
+### 4.2 Per-joint PD position servoing
+
+Every one of the 49 actuated joints is driven toward a target angle by its own PD servo, with gains tuned per anatomical group rather than uniformly: spine joints at $k_p{=}700, k_v{=}130$ (stiff, to resist gravitational sag of the trunk); hips at $k_p{=}900, k_v{=}150$ and knees at $k_p{=}1000, k_v{=}180$ (the highest in the body, to prevent squatting under load); ankles at $k_p{=}600, k_v{=}100$; shoulders, wrists, and arms in the $k_p{=}150\text{-}200$ range; and neck/head deliberately soft at $k_p{=}80, k_v{=}25$, since the head's small inertia makes a stiffer gain produce visible bobblehead oscillation. Targets pass through a three-layer clamp pipeline before reaching the physics engine: a rig-limit gate that also applies joint-specific coupling rules (for example, an arm pitch past 0.523 rad auto-injects a shoulder delta, and neck yaw auto-injects a counter-roll of $-0.15\times$yaw to keep the head's rig-limit swap from producing anatomically implausible poses); an alias-resolution and anatomical-limit store; and a final anatomical clamp that also applies a 20-step ramp factor, $\min(1.0, \text{stepCount}/20)$, so that a freshly spawned or reset agent eases into full actuation rather than snapping to target on the first physics step.
+
+### 4.3 Reaction-mass balance system
+
+The third layer is not a conventional contact-force controller; it is a physical reaction mass, an 18 kg non-colliding sphere, mounted on two perpendicular slide joints (lateral, $\pm 0.6$ m; fore-aft, $\pm 0.6$ m), each driven by its own actuator ($k_p{=}1500, k_v{=}260$) with a paired shock-absorber gain ($k_p{=}200, k_d{=}40$). This mass is written directly by a dedicated `ReactionMassController` at the full 500 Hz physics rate and is deliberately excluded from the body's actuator map used by the 60 Hz pose-flush routine, specifically so that routine can never zero it out. The system counters center-of-mass destabilization by displacing this mass opposite the disturbance, the same working principle as a reaction-wheel or counter-mass balance mechanism in physical robotics, implemented here as a linear slide rather than a rotating wheel. We are not aware of this specific mechanism, a slide-mounted reaction mass as a browser-simulated humanoid balance layer, having been previously documented, though the underlying reaction-mass principle is well established in robotics generally.
+
+### 4.4 Center-of-mass lean reflex and capture-step recovery
+
+The innermost layer estimates the horizontal offset and velocity of the center of mass and computes the capture-point quantities described in Section 2 ($\tau = \sqrt{h/g}$, $\text{CP} = x_{\text{COM}} + \dot{x}_{\text{COM}}\tau$) via a dedicated recorder. Below a threshold offset, it commands a corrective lean, injected as an additive pitch delta at the upper-spine joint (positive lean offset corresponds to leaning backward, countering forward center-of-mass drift); above that threshold, it triggers a capture step, a forced swing-leg motion intended to place a foot under the falling center of mass. This is the layer in which Section 5.2's failure occurs.
+
+### 4.5 Locomotion reference
+
+Walking is not produced by the layers above from scratch; they track a nominal joint-angle trajectory supplied by a hand-authored, four-phase gait reference (right push/left swing, left touchdown/weight transfer, left push/right swing, right touchdown/cycle reset) expressed as per-phase joint-angle overrides on the Mixamo-convention skeleton, with an explicit design rationale attached to each phase (for example, a 2-degree lateral spine lean at push-off, intended to shift the center of mass over the stance foot for swing-leg clearance, and arm counter-swing to conserve angular momentum). This reference is explicitly documented in the project as a starting suggestion to be adapted dynamically, not a fixed ground-truth trajectory, and the layers in Sections 4.1-4.4 correct deviations from it as they arise; it is not derived from motion-capture data.
+
+### 4.6 LLM-to-controller interface
+
+The external LLM supplies discrete, semantic motor intent, not 500 Hz joint targets, since network inference latency makes that rate structurally unreachable. This intent is held fixed across many physics steps while the layers above execute against it. This is structurally the same rate-separation problem that Zawalski et al. [4] address for chain-of-thought token generation during VLA inference, solved here by decoupling reasoning rate from control rate at the architecture level, since our controller, unlike a VLA, is not the model doing the reasoning.
+
+## 5. Failure-Mode Analysis
+
+We report the following two failure modes exactly as observed and as documented in the project's own internal engineering notes, without adjusting their description to make the system appear more capable than it currently is.
+
+### 5.1 Balance-authority arbitration defect
+
+The root balancer (Section 4.1) is intended to run at reduced torque authority during intentional, LLM-commanded motion, on the reasoning that a balancer tuned to resist disturbance will also resist deliberate movement unless its authority is temporarily reduced. A scaling constant for this purpose, `MotorController.GAIT_BALANCE_SCALE`, exists in the codebase, gated behind a `gaitActive` flag; per the project's own debugging documentation, this flag "exist[s] but [is] never activated by any caller." The intended scale value itself is inconsistently recorded across the project's internal documentation, one source lists 0.5 (a 50% reduction), another lists 0.15 (an 85% reduction), which is itself a symptom of how dormant this code path has been: nobody has needed to reconcile the two values because neither has ever executed. The practical, verified consequence is that the balance layer runs at full authority (the base $k_p{=}800, k_d{=}320$ from Section 4.1) at all times, including during deliberate motion, and therefore actively resists commanded movement rather than only correcting unintended deviation. This is a straightforward, precisely located implementation defect rather than a design flaw in the layering itself; we report it because a reader attempting to reproduce this style of layered controller should expect to encounter, and explicitly test for, exactly this class of authority-arbitration bug, where an authority-reduction path is written but never wired to the control flow that should invoke it.
+
+### 5.2 Capture-step structural failure
+
+The capture-step recovery layer (Section 4.4) has a failure mode that is architectural rather than a simple defect. When the estimated center-of-mass offset exceeds the lean-correction threshold, the corrective lean commanded through the upper-spine injection point saturates before the body is stabilized, allowing the torso to tip past the range from which recovery is possible, while the swing leg's knee extensor drive (gain $k_p{=}1000, k_v{=}180$, the stiffest joint in the body, but still bounded by the same anatomical and rig-limit clamp pipeline as every other joint, Section 4.2) is insufficient to lift the foot clear of the ground against the body's full weight in the time available before the torso has already committed past that range. The result is that a capture step is correctly triggered under the intended conditions but essentially never lands successfully: the timing and torque budgets of the lean-saturation limit and the swing-leg lift are not currently compatible with each other. The system's built-in fall-diagnosis tooling, a 300-frame ring buffer capturing tilt angle, root height, per-foot contact state, center-of-mass position, applied `xfrc` torques, and per-joint state, is the mechanism by which this failure was characterized, and is the tool we recommend for the controlled, repeated-trial study this report does not itself contain (Section 8). Resolving the failure will likely require either a higher knee-extensor torque budget during the swing phase specifically, a lower lean-saturation limit that triggers the step earlier while more recovery margin remains, or both; we leave a controlled resolution of this trade-off, and confirmation of how much of it is attributable to Section 5.1's defect rather than the torque budget on its own, to future work.
+
+## 6. Data Export and Validated Compatibility
+
+Independent of whether a given episode's balance controller succeeds, every transition is recorded as a structured trajectory point and can be exported in JSONL, CSV, Parquet, HDF5, or a schema compatible with Hugging Face LeRobot [8]. To validate this pipeline against real downstream tooling rather than only against our own schema definition, we recorded a 50-episode session, exported it in the LeRobot v2.0 schema entirely client-side, and loaded the result in a clean Python 3.10 environment using the official `lerobot` library. The dataset passed the library's validation with no structural modification or manual field casting: proprioceptive states and motor targets mapped correctly into `torch.Tensor` objects of shape `[N, 80]` for the joint-state dimension, and episode boundaries, session identifiers, and termination flags were correctly indexed for use with a standard `torch.utils.data.DataLoader`. We report this as the one claim in this document that we consider fully verified and citable without qualification.
+
+## 7. Discussion
+
+The architecture in Section 4 is, in the terms of Zawalski et al. [4], an instance of separating "thinking carefully" from "looking carefully and acting correctly": the LLM is responsible for semantic intent, and a conventionally engineered, non-learned control stack, four layers deep, including a physical reaction-mass mechanism, is responsible for keeping that intent physically viable. Section 5 is evidence for why the assumption that a language model alone could produce this stability is unsafe: even with a correct semantic instruction, an incorrectly arbitrated or under-budgeted low-level layer is sufficient to produce total task failure regardless of the quality of the reasoning above it. We also think the specificity in Section 5, naming the exact flag, the exact gains, and the exact recorder used to observe the failure, has value beyond this system: a reader building a similar layered stack for a different body will plausibly encounter an equivalent authority-arbitration bug, because the general pattern, a corrective layer that is never actually disabled during voluntary motion, is easy to introduce and easy to miss until deliberate motion under load is actually attempted.
+
+## 8. Limitations
+
+- Both failure modes in Section 5 are, at the time of writing, unresolved. Nothing in this report should be read as claiming a working stepping-recovery controller.
+- The control architecture has been built and exercised on a single embodiment. Whether the four-layer structure generalizes to a differently proportioned or actuated body is untested.
+- No controlled, repeated-trial benchmark of balance success rate, recovery latency, or robustness under systematically varied disturbance is reported here, though the tooling to conduct one (Section 5.2) already exists in the codebase. Section 5's account is a mechanistic diagnosis from development observation and internal documentation, not a statistical characterization.
+- The LLM-to-controller rate separation in Section 4.6 is a fixed hold-and-execute scheme; no adaptive scheme that varies hold duration with observed inference latency has been implemented or tested.
+- The compatibility result in Section 6 concerns data format and schema validity, not the quality, diversity, or downstream training utility of the trajectories themselves.
+- The intended gait-authority reduction value is inconsistently documented internally (0.5 vs. 0.15, Section 5.1) and, since the code path is unreachable, this inconsistency has no runtime effect but should be resolved before the arbitration defect itself is fixed.
+
+## 9. Future Work
+
+The most immediate next step is closing the authority-arbitration defect in Section 5.1, a scoped fix rather than a research question, followed by a controlled evaluation, using the fall-diagnosis ring buffer already built into the system, of whether doing so changes the capture-step failure characterized in Section 5.2. That evaluation should report, at minimum, capture-step trigger rate, landing success rate, and fall latency across a fixed number of repeated trials under a few controlled disturbance magnitudes, which the existing `com_pendulum_recorder` and `diagnose_fall_quick` tooling already support without modification. Beyond that, replacing the fixed hold-and-execute LLM interface (Section 4.6) with a scheme that adapts to observed inference latency, and testing the architecture on a second embodiment to assess how much of its structure is load-bearing versus specific to the current humanoid, are the directions we consider most likely to be informative.
+
+## 10. Conclusion
+
+This report documented a four-layer, two-rate real-time balance control architecture, including a physical reaction-mass balancing mechanism, for an LLM-directed, high-degree-of-freedom humanoid running client-side in a browser, and reported two of its failure modes with exact gains and code-level identifiers, on the view that an honest, specific account of why a control stack currently fails is as useful to the field as an account of a stack that currently succeeds. Independent of the balance controller's current limitations, the system's trajectory export was validated against existing robot-learning tooling without modification, which we report as the one fully verified claim in this document.
+
+## Appendix A: Actuator and Control Parameters
+
+| Bone group | $k_p$ | $k_v$ | Approx. damping ratio $\zeta$ | Notes |
+|---|---|---|---|---|
+| Fingers/thumbs | 5 | 1 | ~0.16 | Underdamped, tendon-synergy driven |
+| Neck/head | 80 | 25 | ~0.49 | Deliberately soft to avoid oscillation |
+| Shoulders | 150 | 30 | ~0.39 | |
+| Wrists/hands | 150 | 30 | ~0.39 | |
+| Arms/forearms | 200 | 40 | ~0.41 | |
+| Spine (x3 joints) | 700 | 130 | ~0.35 | Stiff to resist trunk sag |
+| Ankles/feet | 600 | 100 | ~0.32 | Balance-critical |
+| Hips/upper legs | 900 | 150 | ~0.28 | High for upright stabilization |
+| Knees | 1000 | 180 | ~0.28 | Highest in the body |
+| Root-capsule torque balancer | 800 | 320 | n/a | Torque cap 120 N·m; intended gait-time reduction never executes (Section 5.1) |
+| Reaction-mass slides (x2) | 1500 | 260 | n/a | Paired shock-absorber gain $k_p{=}200, k_d{=}40$ |
+
+Physics timestep: 2 ms (500 Hz), implicit-fast integrator, 200 solver iterations. Actuation ramp: $\min(1.0, \text{stepCount}/20)$ over the first 20 physics steps after spawn or reset.
+
+## Code and Data Availability
+
+Live platform: `https://runsynthia.online`
+Source code: `https://github.com/Greatness0123/synthia`
+
+## References
+
+[1] A. Brohan et al. RT-2: Vision-language-action models transfer web knowledge to robotic control. In *Conference on Robot Learning*, 2023.
+
+[2] M. Kim, K. Pertsch, S. Karamcheti, T. Xiao, A. Balakrishna, S. Nair, R. Rafailov, E. Foster, P. Sanketi, Q. Vuong, T. Kollar, B. Burchfiel, R. Tedrake, D. Sadigh, S. Levine, P. Liang, and C. Finn. OpenVLA: An open-source vision-language-action model. In *Proceedings of the 8th Conference on Robot Learning (CoRL)*, PMLR 270:2679-2713, 2024.
+
+[3] W. Huang et al. Inner monologue: Embodied reasoning through planning with language models. 2022.
+
+[4] M. Zawalski, W. Chen, K. Pertsch, O. Mees, C. Finn, and S. Levine. Robotic control via embodied chain-of-thought reasoning. arXiv:2407.08693, 2024.
+
+[5] J. Pratt, J. Carff, S. Drakunov, and A. Goswami. Capture point: A step toward humanoid push recovery. In *2006 6th IEEE-RAS International Conference on Humanoid Robots*, pp. 200-207, 2006.
+
+[6] J. Englsberger, C. Ott, M. A. Roa, A. Albu-Schäffer, and G. Hirzinger. Bipedal walking control based on capture point dynamics. In *2011 IEEE/RSJ International Conference on Intelligent Robots and Systems*, pp. 4420-4427, 2011.
+
+[7] M. Krause, J. Englsberger, P.-B. Wieber, and C. Ott. Stabilization of the capture point dynamics for bipedal walking based on model predictive control. *IFAC Proceedings Volumes*, 45(22), pp. 165-171, 2012.
+
+[8] Hugging Face. LeRobot: State-of-the-art machine learning for real-world robotics. 2024.
+
+[9] E. Todorov, T. Erez, and Y. Tassa. MuJoCo: A physics engine for model-based control. In *IEEE/RSJ International Conference on Intelligent Robots and Systems*, 2012.
+
+[10] E. Coumans and R. Bai. PyBullet: A Python module for physics simulation for games, robotics, and machine learning. 2016.
+
+[11] NVIDIA. Isaac Sim: Robotics simulation and synthetic data generation. 2023.
+
+[12] M. Savva et al. Habitat: A platform for embodied AI research. In *IEEE/CVF International Conference on Computer Vision*, 2019.
+
+[13] S. James et al. PyRep: Bringing the V-REP simulator to researchers. In *Conference on Robot Learning*, 2019.
+
+[14] A. Brohan et al. RT-1: Robotics transformer for real-world control at scale. In *Proceedings of Robotics: Science and Systems (RSS)*, 2023.
+
+[15] Open X-Embodiment Collaboration. Open X-Embodiment: Robotic learning datasets and RT-X models. arXiv:2310.08864, 2023.
+
+[16] A. Khazatsky et al. DROID: A large-scale in-the-wild robot manipulation dataset. arXiv:2403.12945, 2024.
+
+[17] G. Okorie. Synthia: A browser-native, LLM-directed embodied AI platform. Open-source software, v1.5.1, 2026. `https://github.com/Greatness0123/synthia`
