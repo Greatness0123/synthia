@@ -6,7 +6,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAgentStore } from '../../store/agentStore';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Badge } from '../ui/Badge';
 import { Syringe, ArrowDown, Copy, Check } from '../ui/icons';
 import { STRINGS } from '../../constants/strings';
 import { cleanThoughtText } from '../../utils/thoughtUtils';
@@ -16,7 +15,7 @@ function isNearBottom(el: HTMLElement, threshold = 80): boolean {
 }
 
 export const ThoughtBank: React.FC = () => {
-  const { thoughts, currentThought } = useAgentStore();
+  const { thoughts } = useAgentStore();
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -48,9 +47,7 @@ export const ThoughtBank: React.FC = () => {
   useEffect(() => {
     if (!scrollRef.current || !pinnedRef.current) return;
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [thoughts, currentThought]);
-
-  const cleanedLiveThought = cleanThoughtText(currentThought);
+  }, [thoughts]);
 
   return (
     <div className="relative flex-1 flex flex-col min-h-0 select-text">
@@ -60,43 +57,6 @@ export const ThoughtBank: React.FC = () => {
         className="flex-1 overflow-y-auto p-4 space-y-3.5 select-text"
       >
         <AnimatePresence initial={false}>
-          {cleanedLiveThought && (
-            <motion.div
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              className="group p-3.5 rounded-xl bg-accent-primary/5 border border-accent-primary/20 shadow-sm transition-all"
-            >
-              <div className="flex items-center justify-between gap-2 mb-2 select-none">
-                <div className="flex items-center gap-2">
-                  <span className="flex h-2 w-2 relative">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-primary opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-primary"></span>
-                  </span>
-                  <span className="text-[11px] font-mono font-semibold text-accent-primary tracking-wide">
-                    COGNITIVE STREAM [LIVE]
-                  </span>
-                </div>
-                <button
-                  onClick={() => handleCopy(cleanedLiveThought, 'live')}
-                  className="p-1 rounded hover:bg-white/10 text-text-tertiary hover:text-text-primary transition-colors cursor-pointer"
-                  title="Copy thought"
-                  aria-label="Copy thought"
-                >
-                  {copiedId === 'live' ? <Check size={13} className="text-accent-primary" /> : <Copy size={13} />}
-                </button>
-              </div>
-              <p className="text-[13px] font-sans leading-relaxed text-text-primary whitespace-pre-wrap select-text cursor-text">
-                {cleanedLiveThought}
-                <motion.span
-                  animate={{ opacity: [0, 1, 0] }}
-                  transition={{ duration: 0.8, repeat: Infinity }}
-                  className="inline-block w-1 h-3 ml-1 bg-accent-primary align-middle"
-                />
-              </p>
-            </motion.div>
-          )}
-
           {thoughts.map((thought, index) => {
             const cleaned = cleanThoughtText(thought.text);
             if (!cleaned) return null;
@@ -130,25 +90,15 @@ export const ThoughtBank: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="flex flex-col gap-2">
-                  <p className="text-[13px] font-sans leading-relaxed text-text-primary whitespace-pre-wrap select-text cursor-text">
-                    {cleaned}
-                  </p>
-
-                  {thought.outcome && (
-                    <div className="pt-1 select-none">
-                      <Badge variant="outline" className="text-[10px] font-mono border-border-subtle bg-bg-elevated/60 text-text-secondary">
-                        {thought.outcome}
-                      </Badge>
-                    </div>
-                  )}
-                </div>
+                <p className="text-[13px] font-sans leading-relaxed text-text-primary whitespace-pre-wrap select-text cursor-text">
+                  {cleaned}
+                </p>
               </motion.div>
             );
           })}
         </AnimatePresence>
 
-        {thoughts.length === 0 && !cleanedLiveThought && (
+        {thoughts.length === 0 && (
           <div className="h-full flex flex-col items-center justify-center text-center opacity-30 py-12 select-none">
             <p className="text-xs font-serif italic text-text-tertiary">{STRINGS.AGENT.VOID_SILENT}</p>
             <p className="text-xs text-text-tertiary mt-2">Configure a provider in Settings to begin cognition.</p>

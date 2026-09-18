@@ -26,19 +26,20 @@ Real-time perception, reasoning, and action in a physics-simulated 3D world, no 
 1. [What is SYNTHIA?](#what-is-synthia)
 2. [Why SYNTHIA?](#why-synthia)
 3. [Core Capabilities](#core-capabilities)
-4. [How It Works](#how-it-works)
-5. [Architecture](#architecture)
-6. [Getting Started](#getting-started)
-7. [Configuration](#configuration)
-8. [Development](#development)
-9. [Project Structure](#project-structure)
-10. [Dataset Export](#dataset-export)
-11. [Inference Providers](#inference-providers)
-12. [Security and Privacy](#security-and-privacy)
-13. [Contributing](#contributing)
-14. [Roadmap](#roadmap)
-15. [License](#license)
-16. [Acknowledgments](#acknowledgments)
+4. [Embodied Motion Demonstrations](#embodied-motion-demonstrations)
+5. [How It Works](#how-it-works)
+6. [Architecture](#architecture)
+7. [Getting Started](#getting-started)
+8. [Configuration](#configuration)
+9. [Development](#development)
+10. [Project Structure](#project-structure)
+11. [Dataset Export](#dataset-export)
+12. [Inference Providers](#inference-providers)
+13. [Security and Privacy](#security-and-privacy)
+14. [Contributing](#contributing)
+15. [Roadmap](#roadmap)
+16. [License](#license)
+17. [Acknowledgments](#acknowledgments)
 
 ---
 
@@ -122,6 +123,83 @@ Multiple agents share a single MuJoCo world, each as a prefixed MJCF subtree (fo
 - See and hear each other
 - Talk to each other with real acoustic physics (15m range, occlusion degradation)
 - Interact with shared objects and terrain
+
+## Embodied Motion Demonstrations
+
+Real-time captures of the AI agent directly actuating the simulated humanoid in the MuJoCo physics engine. These recordings demonstrate the closed-loop embodied control system in action, illustrating how the agent refines motor policies, balances, and adapts across successive trial-and-error attempts.
+
+> **Note**: Autoplay is muted to comply with browser media policies. Videos are presented in 16:9; use the native player controls or direct links to inspect the raw captures.
+
+### Locomotion: Iterative Gait Refinement
+
+Sequential walking trials highlighting balance stabilization, foot-placement adjustments, and gait convergence:  
+**Attempt 1** &rarr; **Attempt 2** &rarr; **Attempt 3** &rarr; **Attempt 4**.
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<strong>Walk Attempt 1</strong>
+<video controls autoplay muted loop playsinline preload="metadata" style="display:block; width:100%; aspect-ratio:16 / 9; object-fit:contain; background:#111; border-radius:8px;">
+<source src="docs/assets/motion-reference/locomotion/01-walk-attempt-1.mp4" type="video/mp4">
+</video>
+<a href="docs/assets/motion-reference/locomotion/01-walk-attempt-1.mp4">Open walk-attempt-1.mp4</a>
+</td>
+<td width="50%" valign="top">
+<strong>Walk Attempt 2</strong>
+<video controls autoplay muted loop playsinline preload="metadata" style="display:block; width:100%; aspect-ratio:16 / 9; object-fit:contain; background:#111; border-radius:8px;">
+<source src="docs/assets/motion-reference/locomotion/02-walk-attempt-2.mp4" type="video/mp4">
+</video>
+<a href="docs/assets/motion-reference/locomotion/02-walk-attempt-2.mp4">Open walk-attempt-2.mp4</a>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<strong>Walk Attempt 3</strong>
+<video controls autoplay muted loop playsinline preload="metadata" style="display:block; width:100%; aspect-ratio:16 / 9; object-fit:contain; background:#111; border-radius:8px;">
+<source src="docs/assets/motion-reference/locomotion/03-walk-attempt-3.mp4" type="video/mp4">
+</video>
+<a href="docs/assets/motion-reference/locomotion/03-walk-attempt-3.mp4">Open walk-attempt-3.mp4</a>
+</td>
+<td width="50%" valign="top">
+<strong>Walk Attempt 4</strong>
+<video controls autoplay muted loop playsinline preload="metadata" style="display:block; width:100%; aspect-ratio:16 / 9; object-fit:contain; background:#111; border-radius:8px;">
+<source src="docs/assets/motion-reference/locomotion/04-walk-attempt-4.mp4" type="video/mp4">
+</video>
+<a href="docs/assets/motion-reference/locomotion/04-walk-attempt-4.mp4">Open walk-attempt-4.mp4</a>
+</td>
+</tr>
+</table>
+
+### Dynamic Maneuvers: Backflip Progression
+
+Sequential attempts at high-torque dynamic motion, tracking launch impulse, aerial rotational control, and landing recovery:  
+**Attempt 1** &rarr; **Attempt 2** &rarr; **Attempt 3**.
+
+<table>
+<tr>
+<td width="33%" valign="top">
+<strong>Backflip Attempt 1</strong>
+<video controls autoplay muted loop playsinline preload="metadata" style="display:block; width:100%; aspect-ratio:16 / 9; object-fit:contain; background:#111; border-radius:8px;">
+<source src="docs/assets/motion-reference/backflip/01-backflip-attempt-1.mp4" type="video/mp4">
+</video>
+<a href="docs/assets/motion-reference/backflip/01-backflip-attempt-1.mp4">Open backflip-attempt-1.mp4</a>
+</td>
+<td width="33%" valign="top">
+<strong>Backflip Attempt 2</strong>
+<video controls autoplay muted loop playsinline preload="metadata" style="display:block; width:100%; aspect-ratio:16 / 9; object-fit:contain; background:#111; border-radius:8px;">
+<source src="docs/assets/motion-reference/backflip/02-backflip-attempt-2.mp4" type="video/mp4">
+</video>
+<a href="docs/assets/motion-reference/backflip/02-backflip-attempt-2.mp4">Open backflip-attempt-2.mp4</a>
+</td>
+<td width="33%" valign="top">
+<strong>Backflip Attempt 3</strong>
+<video controls autoplay muted loop playsinline preload="metadata" style="display:block; width:100%; aspect-ratio:16 / 9; object-fit:contain; background:#111; border-radius:8px;">
+<source src="docs/assets/motion-reference/backflip/03-backflip-attempt-3.mp4" type="video/mp4">
+</video>
+<a href="docs/assets/motion-reference/backflip/03-backflip-attempt-3.mp4">Open backflip-attempt-3.mp4</a>
+</td>
+</tr>
+</table>
 
 ---
 
@@ -433,7 +511,5 @@ Built with:
 <div align="center">
 
 **Built by [Greatness Okorie](https://greatnessokorie.vercel.app).**
-
-<!-- TODO: Demo videos will be added here when available. -->
 
 </div>

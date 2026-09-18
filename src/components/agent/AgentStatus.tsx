@@ -15,14 +15,17 @@ export const AgentStatus: React.FC = () => {
     : 'idle';
 
   return (
-    <div className="p-3 border-b border-border flex items-center justify-between shrink-0 bg-bg-panel">
-      <div className="flex items-center gap-2">
-        <Brain size={20} className="text-text-primary" />
-        <h2 className="text-sm font-medium">{activeAgentId}</h2>
+    <div className="flex items-center gap-3 shrink-0">
+      <div className="flex items-center gap-2 min-w-0">
+        <Brain size={16} className="text-text-secondary shrink-0" />
+        <h2 className="text-xs font-semibold text-text-primary truncate">{activeAgentId}</h2>
       </div>
       <Badge
         variant={loopState === 'running' ? 'accent' : 'default'}
-        className={cn(loopState === 'running' && 'animate-pulse')}
+        className={cn(
+          'text-[10px] px-1.5 py-0 shrink-0',
+          loopState === 'running' && 'animate-pulse'
+        )}
       >
         {statusLabel}
       </Badge>
